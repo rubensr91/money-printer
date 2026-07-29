@@ -340,6 +340,52 @@ def get_script_sentence_length() -> int:
         else:
             return 4
 
+def get_deepseek_api_key() -> str:
+    """
+    Gets the DeepSeek API key from config or env.
+
+    Returns:
+        key (str): DeepSeek API key
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        configured = json.load(file).get("deepseek_api_key", "")
+        return configured or os.environ.get("DEEPSEEK_API_KEY", "")
+
+
+def get_deepseek_base_url() -> str:
+    """
+    Gets the DeepSeek API base URL.
+
+    Returns:
+        url (str): DeepSeek API base URL
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("deepseek_base_url", "https://api.deepseek.com")
+
+
+def get_deepseek_model() -> str:
+    """
+    Gets the DeepSeek model name.
+
+    Returns:
+        model (str): DeepSeek model name
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("deepseek_model", "deepseek-v4-flash")
+
+
+def get_pexels_api_key() -> str:
+    """
+    Gets the Pexels API key from config or env.
+
+    Returns:
+        key (str): Pexels API key
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        configured = json.load(file).get("pexels_api_key", "")
+        return configured or os.environ.get("PEXELS_API_KEY", "")
+
+
 def get_post_bridge_config() -> dict:
     """
     Gets the Post Bridge configuration with safe defaults.

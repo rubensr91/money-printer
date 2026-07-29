@@ -8,3 +8,17 @@ niche.txt
 *.exe
 auto.sh
 .DS_Store
+
+# Sensitive data
+*.mp/tiktok_profile/
+*.mp/tiktok_cookies.json
+*.mp/telegram.json
+
+# Temp scripts
+fix_clip4.py
+rehacer_*.py
+rerender_clips.py
+
+# MoviePy temp
+*TEMP_MPY_*
+*hot_backup.py
