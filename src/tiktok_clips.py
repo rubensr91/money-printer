@@ -36,6 +36,13 @@ from moviepy import VideoFileClip, CompositeVideoClip, afx
 if _FFMPEG_BIN:
     import moviepy.config as _mpcfg
     _mpcfg.FFMPEG_BINARY = _FFMPEG_BIN
+
+# Render resolution: process frames at HALF res (540x960 = 4x fewer pixels per
+# frame in the Python compositing loop), then ffmpeg upscales to 1080x1920
+# during encode (cheap swscale). Pixelated background hides the upscale loss.
+# Huge speedup: Python frame loop was the bottleneck, not the encoder.
+_RENDER_W, _RENDER_H = 540, 960
+_FINAL_W, _FINAL_H = 1080, 1920
 from config import ROOT_DIR, get_threads, assert_folder_structure, get_deepseek_model
 from llm_provider import generate_text, select_model, get_active_model
 
@@ -490,19 +497,22 @@ def _face_tracker_available():
         return False
 
 
-def make_dynamic_panoramic(clip, trajectory, overlay_text=None, overlay_color="white"):
+def make_dynamic_panoramic(clip, trajectory, overlay_text=None, overlay_color="white", target_size=None):
     """Speaker-following panoramic: fg is wider than the frame and slides
     horizontally to keep the detected face visible. Falls back to centered
     if trajectory is empty."""
-    size = (1080, 1920)
-    base = clip.resized((80, 144)).resized(size)
+    if target_size is None:
+        target_size = (_FINAL_W, _FINAL_H)
+    W, H = target_size
+    size = (W, H)
+    base = clip.resized((max(80, W // 8), max(144, H // 8))).resized(size)
 
     # Widen fg so there is room to slide horizontally (face-follow effect)
-    FG_W = 1400
+    FG_W = int(1400 * W / _FINAL_W)
     fg = clip.resized(width=FG_W)
 
-    # 16:9 fg of width 1400 has height 787.5; center vertically at 656
-    top = (1920 - 787.5) / 2
+    # 16:9 fg of width FG_W; center vertically
+    top = (H - FG_W * 9 / 16) / 2
 
     def pos(t):
         if not trajectory:
@@ -516,12 +526,12 @@ def make_dynamic_panoramic(clip, trajectory, overlay_text=None, overlay_color="w
                 break
         else:
             x = trajectory[-1][1] if trajectory else 0.5
-        # x in [0,1] on source width. Slide window of width 1080 over fg of width 1400:
-        # max slide = FG_W - 1080 = 320. Map face to window position:
-        max_slide = FG_W - 1080
+        # x in [0,1] on source width. Slide window of width W over fg of width FG_W:
+        # max slide = FG_W - W. Map face to window position:
+        max_slide = FG_W - W
         slide = (x - 0.5) * max_slide
         slide = max(-max_slide / 2, min(max_slide / 2, slide))
-        return (1080 / 2 + slide, top)
+        return (W / 2 + slide, top)
 
     fg = fg.with_position(pos)
     layers = [base, fg]
@@ -538,42 +548,49 @@ def make_dynamic_panoramic(clip, trajectory, overlay_text=None, overlay_color="w
             TextClip(
                 text=overlay_text,
                 font=font_path,
-                font_size=44,
+                font_size=max(20, int(44 * W / _FINAL_W)),
                 color=overlay_color,
                 stroke_color="white" if overlay_color == "black" else "black",
-                stroke_width=2,
+                stroke_width=max(1, int(2 * W / _FINAL_W)),
                 text_align="center",
             )
             .with_duration(clip.duration)
-            .with_position(("center", 1500))
+            .with_position(("center", int(1500 * H / _FINAL_H)))
         )
         layers.append(txt)
     return CompositeVideoClip(layers, size=size)
 
 
-def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", dynamic_trajectory=None):
+def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", dynamic_trajectory=None, target_size=None):
     """Convert any clip to 1080x1920 panoramic.
     bg="none" -> original horizontal clip, no conversion.
     bg="pixel" -> pixelated video background (default).
     bg="white"/"black"/"rojo"/etc -> solid color background.
     overlay_text -> TextClip burned at bottom band (ignored when bg="none").
-    dynamic_trajectory -> speaker-following crop (ignored when bg != pixel/none)."""
+    dynamic_trajectory -> speaker-following crop (ignored when bg != pixel/none).
+    target_size -> render resolution; if smaller than (1080,1920), ffmpeg
+    upscales at encode time (much faster Python frame loop, pixel bg hides loss)."""
     if bg == "none":
         return clip
 
-    size = (1080, 1920)
+    if target_size is None:
+        target_size = (_FINAL_W, _FINAL_H)
+    W, H = target_size
+    size = (W, H)
     rgb = _color_to_rgb(bg)
     if rgb:
         from moviepy import ColorClip
         base = ColorClip(size=size, color=rgb).with_duration(clip.duration)
     else:
-        base = clip.resized((80, 144)).resized(size)
+        # pixelated bg: scale down hard first so blocks are visible after upscale
+        base = clip.resized((max(80, W // 8), max(144, H // 8))).resized(size)
 
     if dynamic_trajectory and bg != "none" and _face_tracker_available():
         return make_dynamic_panoramic(clip, dynamic_trajectory,
-                                      overlay_text=overlay_text, overlay_color=overlay_color)
+                                      overlay_text=overlay_text, overlay_color=overlay_color,
+                                      target_size=target_size)
 
-    fg = clip.resized(width=1080).with_position("center")
+    fg = clip.resized(width=W).with_position("center")
 
     layers = [base, fg]
     if overlay_text:
@@ -589,14 +606,14 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", d
             TextClip(
                 text=overlay_text,
                 font=font_path,
-                font_size=44,
+                font_size=max(20, int(44 * W / _FINAL_W)),
                 color=overlay_color,
                 stroke_color="white" if overlay_color == "black" else "black",
-                stroke_width=2,
+                stroke_width=max(1, int(2 * W / _FINAL_W)),
                 text_align="center",
             )
             .with_duration(clip.duration)
-            .with_position(("center", 1500))
+            .with_position(("center", int(1500 * H / _FINAL_H)))
         )
         layers.append(txt)
     return CompositeVideoClip(layers, size=size)
@@ -675,8 +692,11 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             warn(f"  Face tracking failed ({e}), static center")
 
     clip = VideoFileClip(video_path).subclipped(clip_start, clip_end)
+    # Render at half resolution: Python composite loop is the bottleneck (4x
+    # fewer pixels/frame), ffmpeg upscales to 1080x1920 during encode.
+    render_size = (_RENDER_W, _RENDER_H)
     clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
-                          dynamic_trajectory=trajectory)
+                          dynamic_trajectory=trajectory, target_size=render_size)
 
     if clip.audio is not None:
         clip = clip.with_effects([afx.MultiplyVolume(0.85)])
@@ -684,23 +704,25 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     output_path = os.path.join(output_dir, f"tiktok_clip_{clip_idx}.mp4")
     encoder = _get_encoder()
     info(f"Using encoder: {encoder}")
+    # ffmpeg upscales the 540x960 composite to 1080x1920 while encoding
+    upscale = ["-vf", f"scale={_FINAL_W}:{_FINAL_H}"]
     try:
         if encoder == "h264_nvenc":
             clip.write_videofile(
                 output_path, codec="h264_nvenc", audio_codec="aac",
-                ffmpeg_params=["-preset", "p4"],
+                ffmpeg_params=["-preset", "p4", *upscale],
                 fps=30,
             )
         elif encoder == "h264_qsv":
             clip.write_videofile(
                 output_path, codec="h264_qsv", audio_codec="aac",
-                ffmpeg_params=["-global_quality", "23"],
+                ffmpeg_params=["-global_quality", "23", *upscale],
                 fps=30,
             )
         elif encoder == "h264_amf":
             clip.write_videofile(
                 output_path, codec="h264_amf", audio_codec="aac",
-                ffmpeg_params=["-quality", "quality"],
+                ffmpeg_params=["-quality", "quality", *upscale],
                 fps=30,
             )
         else:
@@ -708,6 +730,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             clip.write_videofile(
                 output_path, codec="libx264", audio_codec="aac",
                 threads=threads, preset="medium", fps=30,
+                ffmpeg_params=upscale,
             )
     except Exception as e:
         if encoder not in ("libx264",):
@@ -720,6 +743,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             clip.write_videofile(
                 output_path, codec="libx264", audio_codec="aac",
                 threads=threads, preset="medium", fps=30,
+                ffmpeg_params=upscale,
             )
         else:
             raise
