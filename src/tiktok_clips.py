@@ -8,6 +8,18 @@ No subtitles rendered, no face tracking.
 import os, sys, re, json, uuid, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Prepend project-local ffmpeg (NVENC-compatible build) to PATH
+# This ffmpeg 6.1.1 works with older NVIDIA drivers (546.x) where
+# the system ffmpeg 8.x requires driver 551.76+.
+_LOCAL_FFMPEG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".mp", "tools")
+_FFMPEG_BIN = None
+if os.path.isdir(_LOCAL_FFMPEG_DIR):
+    _candidate = os.path.join(_LOCAL_FFMPEG_DIR, "ffmpeg.exe")
+    if os.path.exists(_candidate):
+        _FFMPEG_BIN = _candidate
+        os.environ["PATH"] = _LOCAL_FFMPEG_DIR + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FFMPEG_BINARY"] = _candidate
+
 _venv_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _cuda_dirs = [
     os.path.join(_venv_dir, "Lib", "site-packages", "nvidia", "cublas", "bin"),
@@ -21,6 +33,9 @@ for _d in _cuda_dirs:
         os.add_dll_directory(_d)
 
 from moviepy import VideoFileClip, CompositeVideoClip, afx
+if _FFMPEG_BIN:
+    import moviepy.config as _mpcfg
+    _mpcfg.FFMPEG_BINARY = _FFMPEG_BIN
 from config import ROOT_DIR, get_threads, assert_folder_structure, get_deepseek_model
 from llm_provider import generate_text, select_model, get_active_model
 
@@ -673,7 +688,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
         if encoder == "h264_nvenc":
             clip.write_videofile(
                 output_path, codec="h264_nvenc", audio_codec="aac",
-                ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"],
+                ffmpeg_params=["-preset", "p4"],
                 fps=30,
             )
         elif encoder == "h264_qsv":
