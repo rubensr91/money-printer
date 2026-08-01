@@ -433,10 +433,13 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
 
 # ── Main pipeline ────────────────────────────────────────────────────────
 
-def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=None, instructions=None):
+def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=None, instructions=None,
+                default_bg="pixel", default_overlay_text=None):
     """Download video, extract captions, find viral moments via DeepSeek,
     render clips in panoramic format.
-    `instructions` (optional) = user directives passed to DeepSeek as priorities."""
+    `instructions` (optional) = user directives passed to DeepSeek as priorities.
+    `default_bg` = fallback background when instructions don't specify one.
+    `default_overlay_text` = fallback overlay text."""
     mp_dir = os.path.join(ROOT_DIR, ".mp")
     os.makedirs(mp_dir, exist_ok=True)
 
@@ -445,8 +448,8 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     num_clips = render.get("num_clips", num_clips)
     min_clip = render.get("min_clip", min_clip)
     max_clip = render.get("max_clip", max_clip)
-    bg = render.get("bg", "pixel")
-    overlay_text = render.get("overlay_text")
+    bg = render.get("bg", default_bg)
+    overlay_text = render.get("overlay_text", default_overlay_text)
     overlay_color = render.get("overlay_color", "white")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
