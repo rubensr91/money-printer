@@ -19,9 +19,9 @@ DEFAULTS = {
     "bg": "pixel",
     "overlay_text": None,
     "auto_upload": False,
+    "ab_test": False,
     "history": [],  # list of {url, clips, timestamp}
 }
-
 
 def _load():
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)

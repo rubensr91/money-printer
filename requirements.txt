@@ -17,3 +17,8 @@ faster-whisper
 srt_equalizer
 undetected_chromedriver
 platformdirs
+flask
+opencv-python
+openai
+python-telegram-bot
+yt-dlp

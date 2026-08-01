@@ -56,6 +56,87 @@ def _extract_video_id(url):
     return str(uuid.uuid4())[:8]
 
 
+def is_playlist_url(url):
+    """True if URL points to a YouTube playlist."""
+    return "playlist" in url.lower() or "&list=" in url
+
+
+def detect_source_type(url):
+    """Return platform label: 'youtube', 'twitch', 'direct', 'instagram', 'unknown'."""
+    low = url.lower()
+    if "youtube.com" in low or "youtu.be" in low:
+        return "youtube"
+    if "twitch.tv" in low:
+        return "twitch"
+    if "instagram.com" in low:
+        return "instagram"
+    if low.endswith(".mp4") or low.endswith(".webm") or low.endswith(".mov"):
+        return "direct"
+    return "unknown"
+
+
+def download_media(url, output_dir):
+    """Platform-aware download. Returns (video_path, caption_path).
+    YouTube -> with captions. Twitch/Instagram -> video via yt-dlp (no captions).
+    Direct .mp4 URL -> streamed download (no captions)."""
+    stype = detect_source_type(url)
+
+    if stype == "youtube":
+        return download_youtube(url, output_dir)
+
+    vid = _extract_video_id(url) if stype != "direct" else str(uuid.uuid4())[:8]
+    video_path = os.path.join(output_dir, f"{vid}.mp4")
+
+    if os.path.exists(video_path):
+        ok(f"Cached: {vid}.mp4")
+        return video_path, None
+
+    if stype == "direct":
+        info(f"Downloading direct: {url}")
+        import urllib.request
+        try:
+            urllib.request.urlretrieve(url, video_path)
+            return video_path, None
+        except Exception as e:
+            err(f"Direct download failed: {e}")
+            raise RuntimeError(f"Direct download failed: {e}")
+
+    # Twitch / Instagram via yt-dlp
+    info(f"Downloading ({stype}): {url}")
+    template = os.path.join(output_dir, f"{vid}.%(ext)s")
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "-f", "best[height<=1080]",
+        "-o", template, "--merge-output-format", "mp4", "--no-playlist",
+        url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        err(f"yt-dlp ({stype}) failed: {result.stderr[:300]}")
+        raise RuntimeError(f"Download failed: {result.stderr[:200]}")
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    ok(f"Downloaded ({stype}): {vid}.mp4")
+    return video_path, None
+
+
+def extract_playlist_urls(playlist_url, limit=20):
+    """Expand a YouTube playlist into individual video URLs (max `limit`)."""
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--flat-playlist", "--print", "url", "--no-warnings",
+        "--playlist-items", f"1:{limit}",
+        playlist_url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        err(f"yt-dlp playlist failed: {result.stderr[:300]}")
+        return []
+    urls = [line.strip() for line in result.stdout.splitlines()
+            if "youtube.com" in line or "youtu.be" in line]
+    return urls
+
+
 def download_youtube(url, output_dir):
     """Download video and auto-generated captions from YouTube.
     Caches by video ID — skips download if already present."""
@@ -173,8 +254,14 @@ INSTRUCCIONES PRIMORDIALES DEL USUARIO (MAXIMA PRIORIDAD SOBRE TODO LO DEMAS, CU
 
 REGLAS CRITICAS:
 {user_rules}
+ADEMAS de los clips, genera:
+- "description": descripcion viral para TikTok de maximo 150 caracteres, enganchosa, con emojis si procede
+- "tags": array de 5-10 hashtags relevantes SIN el simbolo # (ej: "streamer", "humor")
+
 DEVUELVE SOLO JSON:
 {{
+  "description": "descripcion viral de max 150 chars",
+  "tags": ["tag1", "tag2", "tag3"],
   "clips": [
     {{"start": 12.0, "end": 38.5, "reason": "explica por que es viral"}}
   ]
@@ -197,11 +284,11 @@ Transcripcion con timestamps:
                     data = json.loads(bracket.group())
                 except json.JSONDecodeError:
                     err(f"DeepSeek returned unparseable JSON: {response[:300]}")
-                    return []
+                    return {}, []
             else:
                 err(f"DeepSeek returned no JSON: {response[:300]}")
-                return []
-        return data.get("clips", [])
+                return {}, []
+        return data, data.get("clips", [])
 
     def _validate(clips):
         seg_boundaries = set()
@@ -248,7 +335,7 @@ Transcripcion con timestamps:
 
     # Attempt 1: full prompt
     response = generate_text(prompt)
-    clips = _parse_response(response)
+    meta, clips = _parse_response(response)
     validated = _validate(clips)
 
     # Attempt 2: if 0 valid, retry with a simpler, more forceful prompt
@@ -260,21 +347,35 @@ Devuelve SOLO JSON con {num_clips} clips virales. CADA clip:
 - duracion entre {min_clip}s y {max_clip}s
 - usa los timestamps [X.Xs-Y.Ys] de la transcripcion como referencia
 
+ADEMAS incluye:
+- "description": descripcion viral de max 150 chars
+- "tags": array de 5-10 hashtags SIN el simbolo #
+
 {('INSTRUCCIONES DEL USUARIO (CUMPLELAS): ' + instructions) if instructions else ''}
 
 JSON:
-{{"clips": [{{"start": 0.0, "end": 0.0, "reason": ""}}]}}
+{{"description": "...", "tags": ["..."], "clips": [{{"start": 0.0, "end": 0.0, "reason": ""}}]}}
 
 Transcripcion:
 {transcript[:12000]}"""
         response2 = generate_text(retry_prompt)
-        clips2 = _parse_response(response2)
+        meta2, clips2 = _parse_response(response2)
         validated = _validate(clips2)
+        if validated:
+            meta = meta2
+
+    description = str(meta.get("description", "")).strip()[:150]
+    tags = [str(t).strip("#").strip() for t in meta.get("tags", []) if str(t).strip()]
+    tags = tags[:10]
 
     ok(f"DeepSeek found {len(validated)} viral moments")
     for i, v in enumerate(validated):
         print(f"  [{i+1}] {v['start']:.0f}s-{v['end']:.0f}s ({v['end']-v['start']:.0f}s) | {v['reason'][:80]}")
-    return validated
+    if description:
+        ok(f"Description: {description[:80]}...")
+    if tags:
+        ok(f"Tags: {', '.join(tags[:5])}...")
+    return validated, description, tags
 
 
 def _split_timebased(duration, min_clip=20, max_clip=60, num_clips=4):
@@ -331,6 +432,9 @@ def parse_render_settings(instructions):
         if m:
             settings["bg"] = m.group(1)
 
+    if "dinamico" in low or "dynamic" in low:
+        settings["dynamic"] = True
+
     m = re.search(r'texto\s*["\u201c]\s*([^"\u201d]+)', instructions)
     if m:
         settings["overlay_text"] = m.group(1).strip()
@@ -363,12 +467,82 @@ def _color_to_rgb(name):
     return named.get(name.lower())
 
 
-def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white"):
+def _face_tracker_available():
+    try:
+        import face_tracker  # noqa
+        return True
+    except Exception:
+        return False
+
+
+def make_dynamic_panoramic(clip, trajectory, overlay_text=None, overlay_color="white"):
+    """Speaker-following panoramic: fg is wider than the frame and slides
+    horizontally to keep the detected face visible. Falls back to centered
+    if trajectory is empty."""
+    size = (1080, 1920)
+    base = clip.resized((80, 144)).resized(size)
+
+    # Widen fg so there is room to slide horizontally (face-follow effect)
+    FG_W = 1400
+    fg = clip.resized(width=FG_W)
+
+    # 16:9 fg of width 1400 has height 787.5; center vertically at 656
+    top = (1920 - 787.5) / 2
+
+    def pos(t):
+        if not trajectory:
+            return ("center", "center")
+        x = 0.5
+        for i in range(len(trajectory) - 1):
+            if trajectory[i][0] <= t <= trajectory[i + 1][0]:
+                span = trajectory[i + 1][0] - trajectory[i][0]
+                frac = (t - trajectory[i][0]) / span if span > 0 else 0
+                x = trajectory[i][1] + (trajectory[i + 1][1] - trajectory[i][1]) * frac
+                break
+        else:
+            x = trajectory[-1][1] if trajectory else 0.5
+        # x in [0,1] on source width. Slide window of width 1080 over fg of width 1400:
+        # max slide = FG_W - 1080 = 320. Map face to window position:
+        max_slide = FG_W - 1080
+        slide = (x - 0.5) * max_slide
+        slide = max(-max_slide / 2, min(max_slide / 2, slide))
+        return (1080 / 2 + slide, top)
+
+    fg = fg.with_position(pos)
+    layers = [base, fg]
+    if overlay_text:
+        from moviepy import TextClip
+        font_candidates = [
+            os.path.join(_PROJECT_DIR, "fonts", "bold_font.ttf"),
+            os.path.join(_PROJECT_DIR, "fonts", "BebasNeue-Regular.ttf"),
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        font_path = next((f for f in font_candidates if os.path.exists(f)), None)
+        txt = (
+            TextClip(
+                text=overlay_text,
+                font=font_path,
+                font_size=44,
+                color=overlay_color,
+                stroke_color="white" if overlay_color == "black" else "black",
+                stroke_width=2,
+                text_align="center",
+            )
+            .with_duration(clip.duration)
+            .with_position(("center", 1500))
+        )
+        layers.append(txt)
+    return CompositeVideoClip(layers, size=size)
+
+
+def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", dynamic_trajectory=None):
     """Convert any clip to 1080x1920 panoramic.
     bg="none" -> original horizontal clip, no conversion.
     bg="pixel" -> pixelated video background (default).
     bg="white"/"black"/"rojo"/etc -> solid color background.
-    overlay_text -> TextClip burned at bottom band (ignored when bg="none")."""
+    overlay_text -> TextClip burned at bottom band (ignored when bg="none").
+    dynamic_trajectory -> speaker-following crop (ignored when bg != pixel/none)."""
     if bg == "none":
         return clip
 
@@ -379,6 +553,10 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white"):
         base = ColorClip(size=size, color=rgb).with_duration(clip.duration)
     else:
         base = clip.resized((80, 144)).resized(size)
+
+    if dynamic_trajectory and bg != "none" and _face_tracker_available():
+        return make_dynamic_panoramic(clip, dynamic_trajectory,
+                                      overlay_text=overlay_text, overlay_color=overlay_color)
 
     fg = clip.resized(width=1080).with_position("center")
 
@@ -409,23 +587,75 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white"):
     return CompositeVideoClip(layers, size=size)
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white"):
-    """Render one clip in panoramic format."""
+def _detect_encoder():
+    """Detect best available video encoder: GPU NVENC > AMD AMF > CPU libx264."""
+    try:
+        r = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True, timeout=15)
+        out = r.stdout or ""
+        if "h264_nvenc" in out:
+            return "h264_nvenc"
+        if "h264_amf" in out:
+            return "h264_amf"
+    except Exception:
+        pass
+    return "libx264"
+
+
+_ENCODER_CACHE = None
+def _get_encoder():
+    global _ENCODER_CACHE
+    if _ENCODER_CACHE is None:
+        _ENCODER_CACHE = _detect_encoder()
+    return _ENCODER_CACHE
+
+
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False):
+    """Render one clip in panoramic format. Uses GPU encoder when available.
+    If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
     info(f"Clip {clip_idx}: {clip_start:.0f}s - {clip_end:.0f}s ({clip_dur:.0f}s)")
 
+    trajectory = None
+    if dynamic and bg not in ("none",):
+        try:
+            import face_tracker
+            positions = face_tracker.track_faces(video_path, clip_start, clip_end)
+            if positions:
+                trajectory = face_tracker.smooth_trajectory(positions, clip_dur)
+                ok(f"  Face tracking: {len(positions)} samples -> dynamic crop")
+            else:
+                warn("  No faces detected, static center")
+        except Exception as e:
+            warn(f"  Face tracking failed ({e}), static center")
+
     clip = VideoFileClip(video_path).subclipped(clip_start, clip_end)
-    clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color)
+    clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
+                          dynamic_trajectory=trajectory)
 
     if clip.audio is not None:
         clip = clip.with_effects([afx.MultiplyVolume(0.85)])
 
     output_path = os.path.join(output_dir, f"tiktok_clip_{clip_idx}.mp4")
-    threads = get_threads()
-    clip.write_videofile(
-        output_path, codec="libx264", audio_codec="aac",
-        threads=threads, preset="medium", fps=30,
-    )
+    encoder = _get_encoder()
+    info(f"Using encoder: {encoder}")
+    if encoder == "h264_nvenc":
+        clip.write_videofile(
+            output_path, codec="h264_nvenc", audio_codec="aac",
+            ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"],
+            fps=30,
+        )
+    elif encoder == "h264_amf":
+        clip.write_videofile(
+            output_path, codec="h264_amf", audio_codec="aac",
+            ffmpeg_params=["-quality", "quality"],
+            fps=30,
+        )
+    else:
+        threads = get_threads()
+        clip.write_videofile(
+            output_path, codec="libx264", audio_codec="aac",
+            threads=threads, preset="medium", fps=30,
+        )
     clip.close()
     ok(f"  Saved: {output_path}")
     return output_path
@@ -451,16 +681,19 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     bg = render.get("bg", default_bg)
     overlay_text = render.get("overlay_text", default_overlay_text)
     overlay_color = render.get("overlay_color", "white")
+    dynamic = render.get("dynamic", False)
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
         info(f"Background: {bg}")
+    if dynamic:
+        info("Dynamic face tracking ON")
     info(f"Params: {num_clips} clips, {min_clip}s-{max_clip}s, bg={bg}")
 
     # 1. Download video + captions
     if reporter:
-        reporter.update("Descargando video + subtítulos", 5, "Conectando con YouTube...")
-    video_path, caption_path = download_youtube(youtube_url, mp_dir)
+        reporter.update("Descargando video", 5, "Conectando...")
+    video_path, caption_path = download_media(youtube_url, mp_dir)
 
     # 2. Parse captions
     if reporter:
@@ -478,10 +711,11 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     info(f"Video duration: {video_duration:.0f}s")
 
     # 4. Find viral moments
+    description, tags = "", []
     if segments:
         if reporter:
             reporter.update("Buscando mejores momentos con DeepSeek", 30)
-        moments = find_best_moments(segments, video_duration, min_clip, max_clip, num_clips, instructions)
+        moments, description, tags = find_best_moments(segments, video_duration, min_clip, max_clip, num_clips, instructions)
     else:
         moments = []
 
@@ -499,8 +733,10 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
                           f"{m['end']-m['start']:.0f}s {bg}")
 
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
-                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color)
-        yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg}
+                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic)
+        yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
+               "description": description, "tags": tags,
+               "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
 
     if reporter:
         reporter.update("Clips generados", 95, f"{total} clips listos")
@@ -526,9 +762,9 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     clip_info.close()
 
     if segments:
-        moments = find_best_moments(segments, video_duration, min_clip, max_clip, num_clips, instructions)
+        moments, description, tags = find_best_moments(segments, video_duration, min_clip, max_clip, num_clips, instructions)
     else:
-        moments = []
+        moments, description, tags = [], "", []
     if not moments:
         moments = _split_timebased(video_duration, min_clip, max_clip, num_clips)
 
@@ -536,7 +772,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     for i, m in enumerate(moments):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color)
-        outputs.append({"path": out, "duration": m["end"] - m["start"]})
+        outputs.append({"path": out, "duration": m["end"] - m["start"],
+                        "description": description, "tags": tags})
 
     return outputs
 
