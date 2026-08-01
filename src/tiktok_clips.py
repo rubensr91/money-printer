@@ -5,7 +5,7 @@ uses DeepSeek to find viral moments, renders in panoramic format
 (original 16:9 centered on 9:16 with pixelated video background).
 No subtitles rendered, no face tracking.
 """
-import os, sys, re, json, uuid, subprocess
+import os, sys, re, json, uuid, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 _venv_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -588,17 +588,42 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", d
 
 
 def _detect_encoder():
-    """Detect best available video encoder: GPU NVENC > AMD AMF > CPU libx264."""
+    """Detect best available video encoder: GPU NVENC > AMD AMF > CPU libx264.
+    Does a real 1-frame encode test — some ffmpeg builds list the encoder
+    but the GPU driver doesn't support it (nvenc API version mismatch)."""
+    def _test(codec, extra):
+        try:
+            test_in = os.path.join(tempfile.gettempdir(), "enc_test_in.mp4")
+            test_out = os.path.join(tempfile.gettempdir(), "enc_test_out.mp4")
+            if not os.path.exists(test_in):
+                cmd = [sys.executable, "-c", _GENERATE_TEST_VIDEO_SCRIPT, test_in]
+                subprocess.run(cmd, capture_output=True, timeout=30)
+            cmd = ["ffmpeg", "-y", "-i", test_in, "-c:v", codec, *extra,
+                   "-t", "0.1", "-an", test_out]
+            r = subprocess.run(cmd, capture_output=True, timeout=30)
+            return r.returncode == 0 and os.path.exists(test_out)
+        except Exception:
+            return False
+
     try:
         r = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True, timeout=15)
         out = r.stdout or ""
-        if "h264_nvenc" in out:
+        if "h264_nvenc" in out and _test("h264_nvenc", ["-preset", "p4", "-rc", "vbr", "-cq", "23"]):
             return "h264_nvenc"
-        if "h264_amf" in out:
+        if "h264_amf" in out and _test("h264_amf", ["-quality", "quality"]):
             return "h264_amf"
     except Exception:
         pass
     return "libx264"
+
+
+_GENERATE_TEST_VIDEO_SCRIPT = """
+import sys, subprocess, os
+out = sys.argv[1]
+# Generate a tiny test video with ffmpeg (1s, 320x240)
+subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
+                "-pix_fmt", "yuv420p", out], capture_output=True, timeout=30)
+"""
 
 
 _ENCODER_CACHE = None
@@ -638,24 +663,39 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     output_path = os.path.join(output_dir, f"tiktok_clip_{clip_idx}.mp4")
     encoder = _get_encoder()
     info(f"Using encoder: {encoder}")
-    if encoder == "h264_nvenc":
-        clip.write_videofile(
-            output_path, codec="h264_nvenc", audio_codec="aac",
-            ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"],
-            fps=30,
-        )
-    elif encoder == "h264_amf":
-        clip.write_videofile(
-            output_path, codec="h264_amf", audio_codec="aac",
-            ffmpeg_params=["-quality", "quality"],
-            fps=30,
-        )
-    else:
-        threads = get_threads()
-        clip.write_videofile(
-            output_path, codec="libx264", audio_codec="aac",
-            threads=threads, preset="medium", fps=30,
-        )
+    try:
+        if encoder == "h264_nvenc":
+            clip.write_videofile(
+                output_path, codec="h264_nvenc", audio_codec="aac",
+                ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"],
+                fps=30,
+            )
+        elif encoder == "h264_amf":
+            clip.write_videofile(
+                output_path, codec="h264_amf", audio_codec="aac",
+                ffmpeg_params=["-quality", "quality"],
+                fps=30,
+            )
+        else:
+            threads = get_threads()
+            clip.write_videofile(
+                output_path, codec="libx264", audio_codec="aac",
+                threads=threads, preset="medium", fps=30,
+            )
+    except Exception as e:
+        if encoder != "libx264":
+            warn(f"GPU encoder {encoder} failed ({str(e)[:120]}). Falling back to libx264 (CPU)...")
+            global _ENCODER_CACHE
+            _ENCODER_CACHE = "libx264"
+            threads = get_threads()
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            clip.write_videofile(
+                output_path, codec="libx264", audio_codec="aac",
+                threads=threads, preset="medium", fps=30,
+            )
+        else:
+            raise
     clip.close()
     ok(f"  Saved: {output_path}")
     return output_path
