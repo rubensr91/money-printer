@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import ROOT_DIR
 
 COOKIES_FILE = os.path.join(ROOT_DIR, ".mp", "tiktok_cookies.json")
-TIKTOK_UPLOAD = "https://www.tiktok.com/upload?lang=es"
+TIKTOK_UPLOAD = "https://www.tiktok.com/tiktokstudio/upload?lang=es"
 TIKTOK_LOGIN = "https://www.tiktok.com/login"
 USER_DATA_DIR = os.path.join(ROOT_DIR, ".mp", "tiktok_profile")
 
@@ -165,105 +165,121 @@ def upload_video(video_path, description="", tags=None, draft=True):
             p.stop()
             return False
 
-    # Wait for video upload AND content review modal to close
-    print("  Esperando que termine procesamiento y revisión...")
-    time.sleep(5)
-    for i in range(180):
+    # Wait for upload UI to fully settle — specifically wait for "Guardar borrador"
+    print("  Esperando que termine el procesamiento...")
+    try:
+        page.wait_for_selector('button:has-text("Guardar borrador")', timeout=120000)
+        page.wait_for_timeout(2000)
+        print("  Procesamiento completo")
+    except:
+        # Fallback: wait for Publicar if no draft button
         try:
-            # Check if modal is still visible
-            modal_selectors = [
-                '[class*="TUXModal"]',
-                'div:has-text("Revisaremos")',
-                'div:has-text("review")',
-            ]
-            any_modal = False
-            for ms in modal_selectors:
-                try:
-                    el = page.locator(ms).first
-                    if el.is_visible():
-                        any_modal = True
-                        break
-                except:
-                    pass
-
-            if not any_modal:
-                # Also check if contenteditable is now interactable
-                caption_el = page.locator('[contenteditable="true"]').first
-                if caption_el.is_visible():
-                    print(f"  Procesamiento completado en {i}s")
-                    break
+            page.wait_for_selector('button:has-text("Publicar")', timeout=120000)
+            page.wait_for_timeout(2000)
         except:
             pass
-        time.sleep(1)
-        if i % 30 == 0 and i > 0:
-            print(f"  ... aún esperando ({i}s)")
-    else:
-        print("  Timeout. Continuando...")
-    page.wait_for_timeout(2000)
 
     # Add description/caption
     try:
         caption_el = page.locator('[contenteditable="true"]').first
         caption_el.wait_for(timeout=10000, state="attached")
         time.sleep(1)
-
         full_text = description
         if tags:
             full_text += " " + " ".join(f"#{t.strip('#')}" for t in tags)
-
-        # Try clicking through any remaining overlays
         caption_el.click(force=True)
         page.wait_for_timeout(500)
         caption_el.fill(full_text)
-        print(f"  Descripción añadida: {full_text[:80]}...")
+        print(f"  Descripcion anadida")
     except Exception as e:
-        print(f"  Aviso: no se pudo añadir descripción ({e})")
-        # Try alternative: use keyboard to type
+        print(f"  Aviso caption: {e}")
         try:
             page.keyboard.press("Tab")
             page.wait_for_timeout(500)
-            full_text = description
-            if tags:
-                full_text += " " + " ".join(f"#{t.strip('#')}" for t in tags)
-            page.keyboard.type(full_text, delay=50)
-            print("  Descripción escrita vía teclado")
-        except Exception as e2:
-            print(f"  Tampoco funcionó teclado: {e2}")
+            page.keyboard.type(description + " " + " ".join(f"#{t.strip('#')}" for t in tags), delay=50)
+        except:
+            pass
 
-    # Set as draft (private visibility) if requested
+    page.wait_for_timeout(2000)
+
     if draft:
-        print("  Configurando como borrador...")
+        print("  Click en Guardar borrador...")
+        save_btn = page.locator('button:has-text("Guardar borrador")')
+        if save_btn.count() > 0 and save_btn.is_enabled():
+            save_btn.first.click(no_wait_after=True)
+            # Wait for navigation (TikTok redirects to content page after save)
+            try:
+                page.wait_for_url('**/tiktokstudio/content**', timeout=15000)
+                print("  Borrador guardado!")
+                time.sleep(2)
+                context.close()
+                p.stop()
+                return True
+            except:
+                print("  Sin navegacion, esperando...")
+                time.sleep(5)
+                context.close()
+                p.stop()
+                return True  # Assume saved even without nav
+        else:
+            print("  Boton no disponible. Cerrando sin publicar.")
+            context.close()
+            p.stop()
+            return False
+            print(f"  Error: {e}")
+            context.close()
+            p.stop()
+            return False
+        save_draft_found = False
+
         try:
-            # Try multiple ways to set visibility to "Only me"
-            # Option 1: Click visibility selector
-            for vis_selector in [
-                'div:has-text("¿Quién puede ver")',
-                'div:has-text("Who can watch")',
-                '[aria-label*="visibilidad"]',
-                '[aria-label*="privacy"]',
+            for sel in [
+                'button:has-text("Guardar borrador")',
+                'button:has-text("Save draft")',
             ]:
                 try:
-                    vis_btn = page.locator(vis_selector).first
-                    vis_btn.click(timeout=2000)
-                    page.wait_for_timeout(1000)
-                    break
+                    btn = page.locator(sel).first
+                    if btn.count() > 0:
+                        btn.click(force=True, timeout=5000)
+                        print("  ✓ Guardado como borrador!")
+                        save_draft_found = True
+                        break
                 except:
                     continue
 
-            # Option 2: Look for "Solo yo" / "Only me" / "Private" option
-            for opt in ["Solo yo", "Only me", "Private"]:
-                try:
-                    opt_el = page.locator(f"text={opt}").first
-                    opt_el.click(timeout=2000)
-                    page.wait_for_timeout(500)
-                    print(f"  Visibilidad: '{opt}'")
-                    break
-                except:
-                    continue
+            if not save_draft_found:
+                all_btns = page.locator("button").all()
+                for btn in all_btns:
+                    try:
+                        text = btn.text_content()
+                        if text and "Guardar" in text and "borrador" in text:
+                            btn.click(force=True, timeout=3000)
+                            print("  ✓ Guardado como borrador!")
+                            save_draft_found = True
+                            break
+                    except:
+                        continue
         except Exception as e:
-            print(f"  No se pudo cambiar visibilidad: {e}")
+            print(f"  Error: {e}")
 
-    # Click post button
+        if save_draft_found:
+
+            page.wait_for_timeout(5000)
+            context.close()
+            p.stop()
+            return True
+        else:
+            print("  No se encontró. Cerrando sin publicar.")
+
+            page.screenshot(path=os.path.join(ROOT_DIR, ".mp", "draft_fail.png"))
+
+            context.close()
+            p.stop()
+            return False
+
+    # If not draft
+
+    # If not draft, or draft button not found, click post
     page.wait_for_timeout(2000)
     try:
         # Multiple possible selectors for TikTok's post button

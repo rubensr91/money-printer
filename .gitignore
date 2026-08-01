@@ -22,3 +22,7 @@ rerender_clips.py
 # MoviePy temp
 *TEMP_MPY_*
 *hot_backup.py
+
+# Bot runtime
+bot_output.log
+.omo/

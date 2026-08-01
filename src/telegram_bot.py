@@ -7,6 +7,7 @@ Inline buttons: [Subir a TikTok] [Saltar]
 import os
 import sys
 import json
+import re
 import asyncio
 import logging
 
@@ -18,6 +19,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram_notify import TELEGRAM_CONFIG
 from tiktok_clips import main_stream
 from tiktok_uploader import upload_video
+from progress_reporter import ProgressReporter
 from config import ROOT_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -62,41 +64,72 @@ def clear_state(chat_id):
         json.dump(state, f)
 
 
+def split_url_and_instructions(text):
+    """Split message into (url, instructions). URL = first YouTube link,
+    instructions = everything else in the message."""
+    urls = [w for w in text.split() if "youtube.com/watch" in w or "youtu.be/" in w]
+    if not urls:
+        return None, text
+    url = urls[0]
+    # Remove ALL URLs from text, leaving only the instructions
+    instructions = text
+    for u in urls:
+        instructions = instructions.replace(u, "")
+    instructions = re.sub(r"\s+", " ", instructions).strip()
+    return url, instructions
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages. Look for YouTube URLs."""
+    """Handle incoming messages. Look for YouTube URLs + optional instructions."""
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
 
     if "youtube.com/watch" not in text and "youtu.be/" not in text:
         await update.message.reply_text(
-            "👋 Envíame un enlace de YouTube para generar clips.\n\nEjemplo: https://www.youtube.com/watch?v=xxx"
+            "👋 Envíame un enlace de YouTube para generar clips.\n\n"
+            "Puedes añadir instrucciones después del enlace:\n"
+            "https://www.youtube.com/watch?v=xxx -> céntrate en los momentos más divertidos, clips de 30s\n\n"
+            "Ejemplo: https://www.youtube.com/watch?v=xxx"
         )
         return
 
-    urls = [w for w in text.split() if "youtube.com/watch" in w or "youtu.be/" in w]
-    if not urls:
+    url, instructions = split_url_and_instructions(text)
+    if not url:
         return
 
-    url = urls[0]
-    msg = await update.message.reply_text("⏳ Descargando video y analizando con DeepSeek...")
+    logger.info(f"Received URL: {url}")
+    logger.info(f"Instructions: {instructions!r}" if instructions else "No instructions")
+
+    reporter = ProgressReporter(chat_id=chat_id)
+    reporter.start()
+    if instructions:
+        msg = await update.message.reply_text(
+            f"⏳ Iniciando pipeline...\n📝 <i>Instrucciones recibidas: \"{instructions[:200]}\"</i>",
+            parse_mode="HTML",
+        )
+    else:
+        msg = await update.message.reply_text("⏳ Iniciando pipeline...")
 
     try:
         clip_count = 0
-        for clip in main_stream(url, min_clip=20, max_clip=55, num_clips=4):
+        for clip in main_stream(url, min_clip=20, max_clip=60, num_clips=3,
+                                reporter=reporter, instructions=instructions or None):
             clip_count += 1
             dur = clip.get("duration", 0)
-            desc = clip.get("desc", "")
-            tags = clip.get("tags", [])
-            tag_str = " ".join(f"#{t}" for t in tags)
             path = clip["path"]
+            bg = clip.get("bg", "pixel")
+            is_horizontal = (bg == "none")
 
-            caption = f"<b>Clip {clip_count}</b> ({dur:.0f}s)\n{desc}\n{tag_str}"
+            if is_horizontal:
+                caption = f"🎬 <b>Clip {clip_count}</b> ({dur:.0f}s) horizontal"
+                vid_dim = {}
+            else:
+                caption = f"🎬 <b>Clip {clip_count}</b> ({dur:.0f}s) panorámico"
+                vid_dim = {"width": 1080, "height": 1920}
 
             # Save state for callback
             save_state(chat_id, {
                 "path": path,
-                "desc": desc,
-                "tags": tags,
                 "clip_idx": clip_count,
             })
 
@@ -115,8 +148,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                     reply_markup=keyboard,
                     supports_streaming=True,
-                    width=1080,
-                    height=1920,
+                    **vid_dim,
                 )
 
             # Update progress message
@@ -127,9 +159,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(f"🏁 {clip_count} clips generados. Revisa cada uno arriba.")
 
+        reporter.stop()
+
     except Exception as e:
         logger.error(f"Error processing {url}: {e}")
         await msg.edit_text(f"❌ Error: {str(e)[:200]}")
+        reporter.stop()
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,8 +200,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             upload_video(
                 clip_info["path"],
-                clip_info["desc"],
-                clip_info["tags"],
+                "Clip panorámico",
+                [],
                 draft=False,
             )
             await query.edit_message_caption(
@@ -186,12 +221,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎬 <b>MoneyPrinter V2 Bot</b>\n\n"
-        "Envíame un enlace de YouTube y te generaré clips para TikTok.\n\n"
-        "Cada clip vendrá con:\n"
-        "• Subtítulos estilo TikTok\n"
-        "• Face tracking\n"
-        "• Descripción + 5 hashtags\n"
-        "• Botones para subir o saltar\n\n"
+        "Envíame un enlace de YouTube y te generaré clips.\n\n"
+        "Por defecto: formato panorámico 9:16 (fondo del mismo video).\n"
+        "Añade instrucciones para personalizar:\n"
+        "• <code>horizontal</code> — clip en 16:9 sin fondo\n"
+        "• <code>fondo blanco</code> o <code>fondo negro</code>\n"
+        "• <code>texto \"tu frase\"</code> — incrusta texto abajo\n"
+        "• <code>1 clip de 30 segundos</code> — número y duración\n\n"
         "Envía /help para más info.",
         parse_mode="HTML",
     )
