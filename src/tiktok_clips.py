@@ -588,28 +588,34 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", d
 
 
 def _detect_encoder():
-    """Detect best available video encoder: GPU NVENC > AMD AMF > CPU libx264.
-    Does a real 1-frame encode test — some ffmpeg builds list the encoder
-    but the GPU driver doesn't support it (nvenc API version mismatch)."""
+    """Detect best available video encoder with real test: NVENC > QSV > AMF > CPU."""
     def _test(codec, extra):
         try:
-            test_in = os.path.join(tempfile.gettempdir(), "enc_test_in.mp4")
-            test_out = os.path.join(tempfile.gettempdir(), "enc_test_out.mp4")
+            test_dir = tempfile.gettempdir()
+            test_in = os.path.join(test_dir, "enc_test_in.mp4")
+            test_out = os.path.join(test_dir, "enc_test_out.mp4")
             if not os.path.exists(test_in):
                 cmd = [sys.executable, "-c", _GENERATE_TEST_VIDEO_SCRIPT, test_in]
                 subprocess.run(cmd, capture_output=True, timeout=30)
             cmd = ["ffmpeg", "-y", "-i", test_in, "-c:v", codec, *extra,
-                   "-t", "0.1", "-an", test_out]
+                   "-t", "0.5", "-an", test_out]
             r = subprocess.run(cmd, capture_output=True, timeout=30)
-            return r.returncode == 0 and os.path.exists(test_out)
+            ok = r.returncode == 0 and os.path.exists(test_out) and os.path.getsize(test_out) > 100
+            try:
+                os.remove(test_out)
+            except Exception:
+                pass
+            return ok
         except Exception:
             return False
 
     try:
         r = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True, timeout=15)
         out = r.stdout or ""
-        if "h264_nvenc" in out and _test("h264_nvenc", ["-preset", "p4", "-rc", "vbr", "-cq", "23"]):
+        if "h264_nvenc" in out and _test("h264_nvenc", ["-preset", "p4"]):
             return "h264_nvenc"
+        if "h264_qsv" in out and _test("h264_qsv", []):
+            return "h264_qsv"
         if "h264_amf" in out and _test("h264_amf", ["-quality", "quality"]):
             return "h264_amf"
     except Exception:
@@ -670,6 +676,12 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
                 ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"],
                 fps=30,
             )
+        elif encoder == "h264_qsv":
+            clip.write_videofile(
+                output_path, codec="h264_qsv", audio_codec="aac",
+                ffmpeg_params=["-global_quality", "23"],
+                fps=30,
+            )
         elif encoder == "h264_amf":
             clip.write_videofile(
                 output_path, codec="h264_amf", audio_codec="aac",
@@ -683,7 +695,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
                 threads=threads, preset="medium", fps=30,
             )
     except Exception as e:
-        if encoder != "libx264":
+        if encoder not in ("libx264",):
             warn(f"GPU encoder {encoder} failed ({str(e)[:120]}). Falling back to libx264 (CPU)...")
             global _ENCODER_CACHE
             _ENCODER_CACHE = "libx264"
