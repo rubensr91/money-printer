@@ -235,9 +235,37 @@ Con `/auto on`, los clips se suben automáticamente sin botones, usando la descr
 El pipeline detecta automáticamente el mejor encoder disponible:
 1. **h264_nvenc** (GPU NVIDIA) — hasta ~50-60 fps
 2. **h264_amf** (GPU AMD) — hasta ~50-60 fps
-3. **libx264** (CPU) — ~5 fps (fallback)
+3. **h264_qsv** (GPU Intel) — ~5 fps
+4. **libx264** (CPU) — ~2-5 fps (fallback)
 
-Verificación: `ffmpeg -encoders | findstr nvenc` debe listar `h264_nvenc`. Con GPU, un clip de 30s se renderiza en ~30 segundos en vez de ~3 minutos.
+### FFmpeg compatible con tu driver NVIDIA
+
+Los ffmpeg modernos (8.x) exigen driver NVIDIA ≥551.76 (nvenc API 12.2). Con
+drivers antiguos (p.ej. 546.18, API 12.1) NVENC falla con "Invalid argument".
+
+El bot usa un **ffmpeg 6.1.1 propio en `.mp/tools/ffmpeg.exe`** que sí funciona
+con drivers antiguos. Se copia ahí manualmente:
+
+```
+mkdir .mp/tools
+# descargar https://github.com/GyanD/codexffmpeg/releases/download/6.1.1/ffmpeg-6.1.1-essentials_build.zip
+# copiar bin/ffmpeg.exe y bin/ffprobe.exe a .mp/tools/
+```
+
+El código antepone `.mp/tools/` al PATH y fuerza moviepy a usar ese binario, así
+que funciona aunque el ffmpeg del sistema sea otro. Sin `.mp/tools/`, cae al
+ffmpeg del sistema (que puede fallar con NVENC si el driver es viejo).
+
+### Render a media resolución
+
+El cuello de botella real no es el encoder sino el bucle de composición en
+Python (frames a 1080x1920). El pipeline compone a **540x960** (4x menos
+píxeles/frame) y ffmpeg hace el upscale a 1080x1920 durante el encode.
+El fondo pixelado oculta la pérdida. Resultado: render ~2.2x más rápido en
+todos los encoders, sin perder resolución final.
+
+Verificación: `ffmpeg -encoders | findstr nvenc` debe listar `h264_nvenc`.
+Con GPU, un clip de 30s se renderiza en ~1 minuto en vez de ~3 minutos.
 
 ---
 
@@ -286,6 +314,7 @@ start_bot_launcher.py     — Arranca bot + web UI
 | OpenCV no detecta caras | Falta haarcascade XML en `.mp/` o `assets/` | Copiar `haarcascade_frontalface_default.xml` allí |
 | `Invalid font Arial` | Font de overlay no encontrada | El pipeline busca fuentes en `fonts/` y Windows Fonts automáticamente |
 | NVENC no aparece en ffmpeg | FFmpeg sin soporte GPU | Instalar ffmpeg de gyan.dev (Windows) o con libnvidia-encode (Linux) |
+| NVENC falla "Invalid argument" | Driver NVIDIA viejo (<551.76) con ffmpeg 8.x | Usar el ffmpeg 6.1.1 bundle en `.mp/tools/` (ver sección 11) o actualizar driver |
 
 ---
 
