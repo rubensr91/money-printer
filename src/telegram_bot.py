@@ -69,7 +69,7 @@ def clear_state(chat_id):
         json.dump(state, f)
 
 
-_URL_DOMAINS = ["youtube.com", "youtu.be", "twitch.tv", "instagram.com", ".mp4", ".webm", ".mov"]
+_URL_DOMAINS = ["youtube.com", "youtu.be", "tiktok.com", "twitch.tv", "instagram.com", ".mp4", ".webm", ".mov"]
 
 
 def split_url_and_instructions(text):
@@ -84,6 +84,38 @@ def split_url_and_instructions(text):
         instructions = instructions.replace(u, "")
     instructions = re.sub(r"\s+", " ", instructions).strip()
     return url, instructions
+
+
+async def _send_raw_to_telegram(url, chat_id):
+    """RAW MODE: download video and send it unedited via Telegram.
+    Called from on_message when user sends only a URL (no instructions)."""
+    from tiktok_clips import download_media
+    mp_dir = os.path.join(ROOT_DIR, ".mp")
+    loop = asyncio.get_running_loop()
+    video_path, _ = await loop.run_in_executor(None, download_media, url, mp_dir)
+
+    sz_mb = os.path.getsize(video_path) / 1024 / 1024
+    if sz_mb > 50:
+        app = _application
+        msg = (f"⚠️ <b>Video demasiado grande</b> ({sz_mb:.0f} MB).\n"
+               f"El límite de Telegram es 50 MB.\n\n"
+               f"Reenvía el enlace con: <code>subir a tiktok</code> "
+               f"para subirlo como borrador a TikTok.")
+        if app:
+            await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+        return
+
+    app = _application
+    if app is None:
+        raise RuntimeError("Bot application not initialized")
+    with open(video_path, "rb") as video_file:
+        await app.bot.send_video(
+            chat_id=chat_id,
+            video=video_file,
+            caption="🎬 <b>Video original</b> (sin editar)",
+            parse_mode="HTML",
+            supports_streaming=True,
+        )
 
 
 # ── Job worker (background thread) ───────────────────────────────────────
@@ -149,6 +181,7 @@ def _process_job(job):
     chat_id = int(job["chat_id"])
     url = job["url"]
     instructions = job.get("instructions") or ""
+    dest_tiktok = bool(job.get("dest_tiktok", False))
     cfg = bot_config.get_all(chat_id)
 
     logger.info(f"Processing job {job['id']}: {url}")
@@ -202,24 +235,38 @@ def _process_job(job):
                 ]
             ])
 
-            with open(path, "rb") as video_file:
-                app = _application
-                if app is None:
-                    raise RuntimeError("Bot application not initialized")
-                import asyncio
-                future = asyncio.run_coroutine_threadsafe(
-                    app.bot.send_video(
-                        chat_id=chat_id,
-                        video=video_file,
-                        caption=caption,
-                        parse_mode="HTML",
-                        reply_markup=keyboard,
-                        supports_streaming=True,
-                        **vid_dim,
-                    ),
-                    _app_loop,
-                )
-                future.result(timeout=120)
+            if dest_tiktok:
+                # Upload to TikTok as DRAFT (never publish)
+                # Worker runs in a thread: Playwright sync API is fine here
+                try:
+                    ok = upload_video(path, description or "Clip automático", tags, True)
+                    if ok:
+                        _send_progress_message(chat_id,
+                            f"✅ <b>Clip {clip_count} guardado en borradores de TikTok.</b> Revísalo antes de publicar.")
+                    else:
+                        _send_progress_message(chat_id,
+                            f"⚠️ No encontré el botón de guardar borrador en TikTok para el clip {clip_count}. Revisa manualmente.")
+                except Exception as e:
+                    _send_progress_message(chat_id, f"⚠️ Upload a TikTok falló clip {clip_count}: {str(e)[:100]}")
+            else:
+                with open(path, "rb") as video_file:
+                    app = _application
+                    if app is None:
+                        raise RuntimeError("Bot application not initialized")
+                    import asyncio
+                    future = asyncio.run_coroutine_threadsafe(
+                        app.bot.send_video(
+                            chat_id=chat_id,
+                            video=video_file,
+                            caption=caption,
+                            parse_mode="HTML",
+                            reply_markup=keyboard,
+                            supports_streaming=True,
+                            **vid_dim,
+                        ),
+                        _app_loop,
+                    )
+                    future.result(timeout=120)
 
             outputs.append(path)
 
@@ -227,8 +274,8 @@ def _process_job(job):
             if bot_config.get(chat_id, "auto_upload", False):
                 try:
                     desc = description or "Clip automático"
-                    upload_video(path, desc, tags, draft=False)
-                    _send_progress_message(chat_id, f"✅ Clip {clip_count} subido a TikTok automáticamente")
+                    upload_video(path, desc, tags, draft=True)
+                    _send_progress_message(chat_id, f"✅ Clip {clip_count} guardado en borrador TikTok (auto)")
                 except Exception as e:
                     _send_progress_message(chat_id, f"⚠️ Auto-upload falló clip {clip_count}: {str(e)[:100]}")
 
@@ -538,7 +585,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not any(d in text for d in _URL_DOMAINS):
         await update.message.reply_text(
-            "👋 Envíame un enlace de YouTube, Twitch o Instagram para generar clips.\n\n"
+            "👋 Envíame un enlace de YouTube, TikTok, Twitch o Instagram para generar clips.\n\n"
             "Puedes añadir instrucciones después del enlace:\n"
             "https://www.youtube.com/watch?v=xxx -> horizontal, 1 clip de 30 segundos\n\n"
             "/help para ver todos los comandos."
@@ -552,6 +599,28 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received URL: {url}")
     logger.info(f"Instructions: {instructions!r}" if instructions else "No instructions")
 
+    # ── Determine destination ──────────────────────────────────────────
+    low_instr = (instructions or "").lower()
+    dest_tiktok = any(kw in low_instr for kw in [
+        "subir a tiktok", "súbelo a tiktok", "subelo a tiktok",
+        "publícalo en tiktok", "publica en tiktok", "a tiktok", "tiktok",
+    ])
+
+    # ── RAW MODE: no instructions OR explicit raw keywords ─────────────
+    wants_raw = (not instructions or not instructions.strip() or
+                 any(kw in low_instr for kw in
+                     ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición"]))
+
+    if wants_raw and not dest_tiktok:
+        # URL only -> download and send raw via Telegram (blocking, no queue)
+        await update.message.reply_text("⏳ Descargando video...")
+        try:
+            await _send_raw_to_telegram(url, chat_id)
+        except Exception as e:
+            logger.error(f"Raw download failed: {e}")
+            await update.message.reply_text(f"❌ Error descargando: {str(e)[:150]}")
+        return
+
     # Playlist support: expand into individual videos and enqueue all
     if is_playlist_url(url):
         try:
@@ -563,7 +632,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠ Playlist vacía o sin videos accesibles.")
             return
         for u in urls:
-            job_queue.enqueue(chat_id, u, instructions)
+            job_queue.enqueue(chat_id, u, instructions, dest_tiktok=dest_tiktok)
         await update.message.reply_text(
             f"📋 <b>Playlist detectada:</b> {len(urls)} videos en cola.\n"
             f"Se procesarán en orden. /queue para ver el estado.",
@@ -572,15 +641,23 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _ensure_worker()
         return
 
-    job_id = job_queue.enqueue(chat_id, url, instructions)
+    job_id = job_queue.enqueue(chat_id, url, instructions, dest_tiktok=dest_tiktok)
     pending = job_queue.get_pending_count()
 
-    await update.message.reply_text(
-        f"📥 <b>En cola (job #{job_id})</b> — posición {pending}.\n"
-        f"Procesando en breve...\n"
-        f"📝 <i>{instructions[:150] if instructions else 'sin instrucciones'}</i>",
-        parse_mode="HTML",
-    )
+    if dest_tiktok:
+        await update.message.reply_text(
+            f"📥 <b>En cola (job #{job_id})</b> — posición {pending}.\n"
+            f"Se subirá a TikTok en <b>borrador</b> cuando termine.\n"
+            f"📝 <i>{instructions[:150]}</i>",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            f"📥 <b>En cola (job #{job_id})</b> — posición {pending}.\n"
+            f"Procesando en breve...\n"
+            f"📝 <i>{instructions[:150] if instructions else 'sin instrucciones'}</i>",
+            parse_mode="HTML",
+        )
 
     _ensure_worker()
 
@@ -620,10 +697,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             desc = clip_info.get("description") or "Clip panorámico"
             tags = clip_info.get("tags") or []
-            upload_video(clip_info["path"], desc, tags, draft=False)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, upload_video, clip_info["path"], desc, tags, True)
             await query.edit_message_caption(
                 caption=query.message.caption.replace("⏳ _Subiendo a TikTok feed..._", "")
-                + "\n\n✅ <b>Publicado en TikTok!</b>",
+                + "\n\n✅ <b>Guardado en borradores de TikTok.</b> Revísalo antes de publicar.",
                 parse_mode="HTML",
             )
         except Exception as e:

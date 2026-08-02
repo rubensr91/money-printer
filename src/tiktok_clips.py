@@ -84,12 +84,14 @@ def is_playlist_url(url):
 
 
 def detect_source_type(url):
-    """Return platform label: 'youtube', 'twitch', 'direct', 'instagram', 'unknown'."""
+    """Return platform label: 'youtube', 'twitch', 'tiktok', 'direct', 'instagram', 'unknown'."""
     low = url.lower()
     if "youtube.com" in low or "youtu.be" in low:
         return "youtube"
     if "twitch.tv" in low:
         return "twitch"
+    if "tiktok.com" in low:
+        return "tiktok"
     if "instagram.com" in low:
         return "instagram"
     if low.endswith(".mp4") or low.endswith(".webm") or low.endswith(".mov"):
@@ -430,8 +432,21 @@ def parse_render_settings(instructions):
     Returns dict with only the settings explicitly requested."""
     settings = {}
     if not instructions:
+        settings["raw"] = True
         return settings
     low = instructions.lower()
+
+    # RAW mode: no processing at all
+    if any(kw in low for kw in ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición"]):
+        settings["raw"] = True
+        return settings
+
+    # SUMMARY mode: horizontal concat of key moments
+    if any(kw in low for kw in ["resumen", "summary", "recopilación", "recopilacion"]):
+        settings["mode"] = "summary"
+        m = re.search(r"(\d+)\s*(?:min|minutos|minuto)", low)
+        if m:
+            settings["summary_duration"] = int(m.group(1)) * 60
 
     m = re.search(r"(\d+)\s*clip", low)
     if m:
@@ -754,6 +769,44 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
 
 # ── Main pipeline ────────────────────────────────────────────────────────
 
+def _get_duration(video_path):
+    """Return video duration in seconds (no ffprobe dependency)."""
+    try:
+        clip = VideoFileClip(video_path)
+        d = clip.duration
+        clip.close()
+        return d
+    except Exception:
+        return 0
+
+
+def _concat_raw_moments(video_path, moments, output_path=None):
+    """Concat video segments without re-encoding (ffmpeg -c copy, instant).
+    Used by SUMMARY mode. Returns output path."""
+    import subprocess
+    mp_dir = os.path.join(ROOT_DIR, ".mp")
+    if output_path is None:
+        output_path = os.path.join(mp_dir, f"summary_{uuid.uuid4().hex[:6]}.mp4")
+    txt = os.path.join(mp_dir, f"_concat_{uuid.uuid4().hex[:6]}.txt")
+    with open(txt, "w", encoding="utf-8") as f:
+        for m in moments:
+            f.write(f"file '{video_path}'\ninpoint {m['start']}\noutpoint {m['end']}\n")
+    ffmpeg = _find_local_ffmpeg()
+    subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", txt,
+                    "-c", "copy", "-movflags", "+faststart", output_path],
+                   check=True, capture_output=True)
+    os.remove(txt)
+    return output_path
+
+
+def _find_local_ffmpeg():
+    """Return bundled ffmpeg path if present, else 'ffmpeg' from PATH."""
+    bundled = os.path.join(ROOT_DIR, ".mp", "tools", "ffmpeg.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    return "ffmpeg"
+
+
 def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=None, instructions=None,
                 default_bg="pixel", default_overlay_text=None):
     """Download video, extract captions, find viral moments via DeepSeek,
@@ -766,6 +819,48 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
 
     # Render settings parsed from user instructions (may override clip params)
     render = parse_render_settings(instructions)
+
+    # ── RAW MODE: download and pass through unedited ───────────────────
+    if render.get("raw"):
+        info("RAW mode: downloading video without processing")
+        if reporter:
+            reporter.update("Descargando video", 5, "Conectando...")
+        video_path, _ = download_media(youtube_url, mp_dir)
+        dur = _get_duration(video_path)
+        yield {"path": video_path, "duration": dur, "index": 1, "bg": "raw",
+               "description": "", "tags": [], "source_video": video_path,
+               "moment_start": 0, "moment_end": dur}
+        if reporter:
+            reporter.update("Video listo", 95, "raw")
+        return
+
+    # ── SUMMARY MODE: horizontal concat of IA-selected moments ─────────
+    if render.get("mode") == "summary":
+        info("SUMMARY mode: building horizontal summary")
+        if reporter:
+            reporter.update("Descargando video", 5, "Conectando...")
+        video_path, caption_path = download_media(youtube_url, mp_dir)
+        segments = parse_vtt(caption_path) if caption_path else []
+        dur = _get_duration(video_path)
+        target = render.get("summary_duration", 300)
+        if segments:
+            instructions = instructions or ""
+            moments, desc, tags = find_best_moments(
+                segments, dur, min_clip=10, max_clip=90,
+                num_clips=max(4, min(12, target // 30)), instructions=instructions)
+        else:
+            moments, desc, tags = [], "", []
+        if not moments:
+            warn("No moments found, using time-based split")
+            moments = _split_timebased(dur, 10, 90, max(4, min(12, target // 30)))
+        out_path = _concat_raw_moments(video_path, moments)
+        yield {"path": out_path, "duration": sum(m["end"]-m["start"] for m in moments),
+               "index": 1, "bg": "none", "description": desc, "tags": tags,
+               "source_video": video_path, "moment_start": 0, "moment_end": 0}
+        if reporter:
+            reporter.update("Resumen listo", 95, "summary")
+        return
+
     num_clips = render.get("num_clips", num_clips)
     min_clip = render.get("min_clip", min_clip)
     max_clip = render.get("max_clip", max_clip)

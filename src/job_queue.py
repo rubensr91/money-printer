@@ -30,21 +30,27 @@ def _conn():
             finished_at TEXT,
             error TEXT,
             num_clips INTEGER DEFAULT 0,
-            output_paths TEXT DEFAULT '[]'
+            output_paths TEXT DEFAULT '[]',
+            dest_tiktok INTEGER DEFAULT 0
         )
     """)
+    # Migration: add dest_tiktok column if missing (older DBs)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "dest_tiktok" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN dest_tiktok INTEGER DEFAULT 0")
     conn.commit()
     return conn
 
 
-def enqueue(chat_id, url, instructions=""):
-    """Add a job to the queue. Returns job id."""
+def enqueue(chat_id, url, instructions="", dest_tiktok=False):
+    """Add a job to the queue. Returns job id.
+    dest_tiktok=True -> processed video goes to TikTok draft instead of Telegram."""
     with _lock:
         conn = _conn()
         cur = conn.execute(
-            "INSERT INTO jobs (chat_id, url, instructions, status, created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO jobs (chat_id, url, instructions, status, created_at, dest_tiktok) VALUES (?,?,?,?,?,?)",
             (str(chat_id), url, instructions or "", "pending",
-             datetime.datetime.now().isoformat(timespec="seconds")),
+             datetime.datetime.now().isoformat(timespec="seconds"), int(bool(dest_tiktok))),
         )
         conn.commit()
         job_id = cur.lastrowid
