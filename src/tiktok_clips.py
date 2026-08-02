@@ -437,7 +437,9 @@ def parse_render_settings(instructions):
     low = instructions.lower()
 
     # RAW mode: no processing at all
-    if any(kw in low for kw in ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición"]):
+    if any(kw in low for kw in ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición",
+                                 "descárgalo", "descargalo", "almacena", "guárdalo", "guardalo", "lo almacenas",
+                                 "descargar y", "guardar en el pc", "almacenar en el pc"]):
         settings["raw"] = True
         return settings
 

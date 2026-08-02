@@ -86,13 +86,32 @@ def split_url_and_instructions(text):
     return url, instructions
 
 
-async def _send_raw_to_telegram(url, chat_id):
-    """RAW MODE: download video and send it unedited via Telegram.
-    Called from on_message when user sends only a URL (no instructions)."""
+async def _send_raw_to_telegram(url, chat_id, instructions=""):
+    """RAW MODE: download video, then either:
+    - store-only ("almacenar/guardar en el pc"): confirm path, don't send
+    - otherwise: send it unedited via Telegram
+    Called from on_message when user sends URL with raw keywords or no instructions."""
     from tiktok_clips import download_media
     mp_dir = os.path.join(ROOT_DIR, ".mp")
     loop = asyncio.get_running_loop()
     video_path, _ = await loop.run_in_executor(None, download_media, url, mp_dir)
+
+    # Store-only mode: user asked to save it on the PC, not send
+    low = (instructions or "").lower()
+    store_only = any(kw in low for kw in
+                     ["almacena", "guárdalo", "guardalo", "lo almacenas",
+                      "guardar en el pc", "almacenar en el pc", "en el pc"])
+    if store_only:
+        app = _application
+        if app:
+            sz_mb = os.path.getsize(video_path) / 1024 / 1024
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=(f"✅ <b>Video descargado y almacenado en el PC.</b>\n\n"
+                      f"📁 <code>{video_path}</code>\n"
+                      f"💾 {sz_mb:.0f} MB"),
+                parse_mode="HTML")
+        return
 
     sz_mb = os.path.getsize(video_path) / 1024 / 1024
     if sz_mb > 50:
@@ -609,13 +628,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── RAW MODE: no instructions OR explicit raw keywords ─────────────
     wants_raw = (not instructions or not instructions.strip() or
                  any(kw in low_instr for kw in
-                     ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición"]))
+                     ["sin editar", "raw", "original", "tal cual", "sin cambios", "sin edición",
+                      "descárgalo", "descargalo", "almacena", "guárdalo", "guardalo", "lo almacenas",
+                      "descargar y", "guardar en el pc", "almacenar en el pc"]))
 
     if wants_raw and not dest_tiktok:
         # URL only -> download and send raw via Telegram (blocking, no queue)
         await update.message.reply_text("⏳ Descargando video...")
         try:
-            await _send_raw_to_telegram(url, chat_id)
+            await _send_raw_to_telegram(url, chat_id, instructions)
         except Exception as e:
             logger.error(f"Raw download failed: {e}")
             await update.message.reply_text(f"❌ Error descargando: {str(e)[:150]}")
