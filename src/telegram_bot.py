@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import re
+import asyncio
 import threading
 import logging
 
@@ -90,6 +91,13 @@ def split_url_and_instructions(text):
 _worker_started = False
 _worker_lock = threading.Lock()
 _application = None  # set in main() so worker can send messages
+_app_loop = None     # event loop captured in post_init (PTB 22.x has no app.loop)
+
+
+async def _capture_loop(app):
+    """PTB 22.x dropped Application.loop; capture the running loop instead."""
+    global _app_loop
+    _app_loop = asyncio.get_running_loop()
 
 
 def _ensure_worker():
@@ -129,7 +137,7 @@ def _send_progress_message(chat_id, text, parse_mode="HTML"):
         import asyncio
         return asyncio.run_coroutine_threadsafe(
             app.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode),
-            app.loop,
+            _app_loop,
         ).result(timeout=30)
     except Exception as e:
         logger.warning(f"send_message failed: {e}")
@@ -209,7 +217,7 @@ def _process_job(job):
                         supports_streaming=True,
                         **vid_dim,
                     ),
-                    app.loop,
+                    _app_loop,
                 )
                 future.result(timeout=120)
 
@@ -634,7 +642,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Start the bot."""
     global _application
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(_capture_loop).build()
     _application = app
 
     app.add_handler(CommandHandler("start", cmd_start))
