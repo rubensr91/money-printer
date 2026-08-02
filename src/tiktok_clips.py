@@ -290,7 +290,7 @@ DEVUELVE SOLO JSON:
 }}
 
 Transcripcion con timestamps:
-{transcript[:12000]}"""
+{transcript[:40000]}"""
 
     def _parse_response(response):
         response = response.strip()
@@ -379,7 +379,7 @@ JSON:
 {{"description": "...", "tags": ["..."], "clips": [{{"start": 0.0, "end": 0.0, "reason": ""}}]}}
 
 Transcripcion:
-{transcript[:12000]}"""
+{transcript[:40000]}"""
         response2 = generate_text(retry_prompt)
         meta2, clips2 = _parse_response(response2)
         validated = _validate(clips2)
