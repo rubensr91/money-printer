@@ -596,6 +596,78 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Message handler ──────────────────────────────────────────────────────
 
+async def _handle_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, chat_id: int):
+    """Handle text messages WITHOUT a URL: interpret them as natural-language orders.
+    Covers status, history, cancel, reset, config, help. Falls back to /help."""
+    low = text.lower().strip()
+
+    # Status / queue
+    if any(k in low for k in ["estado", "cola", "queue", "status", "pendiente", "en cola", "cómo va", "como va"]):
+        await cmd_queue(update, context)
+        return
+
+    # History
+    if any(k in low for k in ["historial", "historial de", "últimos trabajos", "ultimos trabajos", "history", "qué has hecho"]):
+        await cmd_historial(update, context)
+        return
+
+    # Cancel
+    if "cancel" in low or "cancela" in low or "cancelar" in low:
+        # Try to extract job id
+        m = re.search(r"(\d+)", low)
+        if m:
+            context.args = [m.group(1)]
+            await cmd_cancel(update, context)
+        else:
+            context.args = ["all"]
+            await cmd_cancel(update, context)
+        return
+
+    # Reset config
+    if any(k in low for k in ["restablecer", "reset", "reiniciar configuración", "reiniciar configuracion", "volver a default"]):
+        await cmd_reset(update, context)
+        return
+
+    # Config: clips count
+    m = re.search(r"(\d+)\s*clip", low)
+    if m and any(k in low for k in ["config", "clips", "por defecto", "pon", "configura", "fija"]):
+        bot_config.set(chat_id, "num_clips", int(m.group(1)))
+        await update.message.reply_text(f"✅ {m.group(1)} clips por defecto.", parse_mode="HTML")
+        return
+
+    # Config: background
+    if any(k in low for k in ["fondo pixel", "fondo blanco", "fondo negro", "fondo rojo", "fondo none", "fondo sin"]):
+        if "pixel" in low:
+            await cmd_panoramico(update, context)
+        elif "none" in low or "sin" in low:
+            await cmd_horizontal(update, context)
+        else:
+            await cmd_fondo(update, context)
+        return
+
+    # Config: horizontal / panoramico shortcut
+    if any(k in low for k in ["horizontal", "sin fondo", "16:9", "16/9"]):
+        await cmd_horizontal(update, context)
+        return
+    if any(k in low for k in ["panorámico", "panoramico", "vertical"]):
+        await cmd_panoramico(update, context)
+        return
+
+    # Help / unknown
+    await update.message.reply_text(
+        "👋 Puedo ejecutar estas órdenes (no hace falta URL):\n\n"
+        "• <b>estado / cola</b> — ver trabajos en cola\n"
+        "• <b>historial</b> — últimos trabajos\n"
+        "• <b>cancelar [id]</b> — cancelar trabajo\n"
+        "• <b>reset</b> — restaurar configuración\n"
+        "• <b>fondo pixel / horizontal</b> — modo por defecto\n"
+        "• <b>N clips</b> — número de clips por defecto\n\n"
+        "Y con URL: manda el enlace + instrucciones (ej: <i>1 clip horizontal</i>, "
+        "<i>resumen 3 min</i>, <i>subir a tiktok</i>, <i>sin editar</i>).\n\n"
+        "/help para todos los comandos."
+    )
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages. Look for YouTube URLs + optional instructions.
     Enqueues job in SQLite queue; worker processes it in background."""
@@ -603,12 +675,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     if not any(d in text for d in _URL_DOMAINS):
-        await update.message.reply_text(
-            "👋 Envíame un enlace de YouTube, TikTok, Twitch o Instagram para generar clips.\n\n"
-            "Puedes añadir instrucciones después del enlace:\n"
-            "https://www.youtube.com/watch?v=xxx -> horizontal, 1 clip de 30 segundos\n\n"
-            "/help para ver todos los comandos."
-        )
+        await _handle_text_command(update, context, text, chat_id)
         return
 
     url, instructions = split_url_and_instructions(text)
