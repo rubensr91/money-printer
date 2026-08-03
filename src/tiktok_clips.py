@@ -517,9 +517,9 @@ def parse_render_settings(instructions):
         if any(kw in low for kw in ["con fondo", "fondo subt", "con bg", "con caja", "con recuadro"]):
             settings["subtitles_bg"] = True
         # Language filter
-        if "idioma es" in low or "solo espanol" in low or "solo español" in low:
+        if "idioma es" in low or "solo espanol" in low or "solo español" in low or "en espanol" in low or "en español" in low:
             settings["subtitles_lang"] = ["es"]
-        elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low:
+        elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low or "en ingles" in low or "en inglés" in low:
             settings["subtitles_lang"] = ["en"]
         else:
             settings["subtitles_lang"] = ["es", "en"]  # default: both
