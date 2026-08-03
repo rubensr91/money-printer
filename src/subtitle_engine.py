@@ -110,10 +110,10 @@ def transcribe_segment(
 # Default style configuration
 DEFAULT_STYLE = {
     "bg": False,
-    "bg_color": (0, 0, 0),
+    "bg_color": (0, 0, 0),         # black RGB
     "bg_opacity": 0.6,
     "bg_padding": (16, 8),
-    "lang_colors": {
+    "lang_colors": {               # text color per language (RGB tuples)
         "es": (255, 213, 0),       # Spanish: yellow
         "en": (255, 255, 255),     # English: white
     },
@@ -122,8 +122,6 @@ DEFAULT_STYLE = {
     "stroke_width": 2,
     "position": 0.85,
     "multi_lang_offset": 0.07,
-    "timing_offset": -0.15,        # show subtitle slightly BEFORE audio (negative = earlier)
-    "min_duration": 0.3,           # minimum time a subtitle stays on screen
 }
 
 # Language display order (top to bottom)
@@ -154,13 +152,8 @@ def render_subtitles(
     sub_clips = []
 
     for entry in entries:
-        start = entry["start"] + cfg["timing_offset"]
-        end = entry["end"] + cfg["timing_offset"]
-        # Clamp to valid range
-        start = max(0.0, start)
-        dur = max(cfg["min_duration"], end - start)
-        end = start + dur
-
+        start = entry["start"]
+        end = entry["end"]
         text = entry["text"]
         lang = entry.get("language", "en")
         color = cfg["lang_colors"].get(lang, cfg["default_color"])
@@ -175,7 +168,7 @@ def render_subtitles(
         if cfg["bg"]:
             # Create text + background box
             txt = TextClip(
-                text=text, font=font_path, font_size=font_size,
+                text=text.upper(), font=font_path, font_size=font_size,
                 color=color, stroke_color=cfg["stroke_color"],
                 stroke_width=cfg["stroke_width"],
                 method="label",
@@ -186,19 +179,19 @@ def render_subtitles(
             frame = CompositeVideoClip([
                 bg.with_position(("center", "center")),
                 txt.with_position(("center", "center")),
-            ]).with_duration(max(dur, 0.2))
+            ]).with_duration(max(end - start, 0.2))
             frame = frame.with_position(("center", pos_y - h // 2))
             frame = frame.with_start(start)
         else:
             # Text only with stroke
             frame = TextClip(
-                text=text, font=font_path, font_size=font_size,
+                text=text.upper(), font=font_path, font_size=font_size,
                 color=color, stroke_color=cfg["stroke_color"],
                 stroke_width=cfg["stroke_width"],
                 method="caption",
                 size=(int(clip.w * 0.9), None),
                 text_align="center",
-            ).with_duration(max(dur, 0.2))
+            ).with_duration(max(end - start, 0.2))
             frame = frame.with_position(("center", pos_y))
             frame = frame.with_start(start)
 
@@ -210,11 +203,11 @@ def render_subtitles(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _find_font():
-    """Find best font for subtitles. Prefer Arial (full Latin coverage including accented chars)."""
+    """Find best font for subtitles. Arial first (full Latin chars incl. accented uppercase)."""
     from config import ROOT_DIR
     candidates = [
-        "C:/Windows/Fonts/arial.ttf",           # full Unicode coverage, accented chars
-        "C:/Windows/Fonts/arialbd.ttf",         # Arial Bold
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
         os.path.join(ROOT_DIR, "fonts", "Arial.ttf"),
         os.path.join(ROOT_DIR, "fonts", "bold_font.ttf"),
     ]
