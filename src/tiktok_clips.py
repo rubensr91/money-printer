@@ -521,8 +521,10 @@ def parse_render_settings(instructions):
             settings["subtitles_lang"] = ["es"]
         elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low or "en ingles" in low or "en inglés" in low:
             settings["subtitles_lang"] = ["en"]
+        elif any(kw in low for kw in ["ambos idiomas", "bilingue", "bilingüe", "dos idiomas", "es y en", "en y es"]):
+            settings["subtitles_lang"] = ["es", "en"]  # explicit bilingual
         else:
-            settings["subtitles_lang"] = ["es", "en"]  # default: both
+            settings["subtitles_lang"] = None  # default: auto-detect (single pass)
 
         # Subtitle position
         if "abajo" in low or "inferior" in low:
@@ -787,8 +789,8 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
         tmp_wav = extract_audio_segment(video_path, clip_start, clip_end, output_dir)
         try:
             word_level = (subtitles_level == "word")
-            lang = subtitles_lang if subtitles_lang else ["es", "en"]
-            ok(f"  Transcribing clip audio ({'/'.join(lang)}, {'word' if word_level else 'phrase'})...")
+            lang = subtitles_lang
+            ok(f"  Transcribing clip audio ({'/'.join(lang) if lang else 'auto'}, {'word' if word_level else 'phrase'})...")
             entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
             if entries:
                 style = {"bg": subtitles_bg}

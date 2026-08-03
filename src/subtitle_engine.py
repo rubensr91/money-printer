@@ -63,6 +63,7 @@ def transcribe_segment(
     languages: list[str] | None = None,
 ) -> list[dict]:
     """Transcribe audio with faster-whisper (GPU).
+    When languages is None/empty, transcribes ONCE with auto language detection.
     When multiple languages requested, transcribes once per language,
     keeps entries whose text actually matches the expected language (langdetect)."""
     from faster_whisper import WhisperModel
@@ -75,19 +76,35 @@ def transcribe_segment(
         compute_type=get_whisper_compute_type(),
     )
 
-    target_langs = languages or ["es", "en"]
+    if not languages:
+        # Auto-detect: single transcription pass. Whisper detects the audio
+        # language itself. No language forcing = no duplicated subtitles
+        # (transcribing the same audio once per language produces the same
+        #  text in each pass since Whisper does not translate).
+        segments, info = model.transcribe(audio_path, vad_filter=True,
+                                           word_timestamps=word_level)
+        detected = getattr(info, "language", None) or "es"
+        entries = _segments_to_entries(segments, detected, word_level)
+        entries.sort(key=lambda e: e["start"])
+        entries = _dedup_entries(entries)
+        logger.info(f"Subtitle engine: {len(entries)} entries (auto-detect: {detected})")
+        return entries
 
-    if len(target_langs) == 1:
-        lang = target_langs[0]
+    # Explicit single language: transcribe once in that language
+    if len(languages) == 1:
+        lang = languages[0]
         segments, info = model.transcribe(audio_path, vad_filter=True,
                                            language=lang, word_timestamps=word_level)
-        return _segments_to_entries(segments, lang, word_level)
+        entries = _segments_to_entries(segments, lang, word_level)
+        entries.sort(key=lambda e: e["start"])
+        entries = _dedup_entries(entries)
+        return entries
 
-    # Bilingual: transcribe once per language, filter by langdetect
+    # Explicit bilingual: transcribe once per language, filter by langdetect
     # (Whisper sometimes outputs English words even with language="es",
     #  so we check that the text actually matches the expected language)
     all_entries = []
-    for lang_code in target_langs:
+    for lang_code in languages:
         try:
             segments, _ = model.transcribe(audio_path, vad_filter=True,
                                             language=lang_code, word_timestamps=word_level)
@@ -99,21 +116,18 @@ def transcribe_segment(
             logger.warning(f"  {lang_code} transcription failed: {e}")
 
     all_entries.sort(key=lambda e: e["start"])
+    all_entries = _dedup_entries(all_entries)
     logger.info(f"Subtitle engine: {len(all_entries)} total entries, bilingual")
     return all_entries
 
 
 def _filter_by_language(entries, expected_lang):
     """Keep entries whose text is detected as the expected language.
-    Filters out translations: e.g., Spanish text in an English transcription pass.
-    Short text (<4 chars) is kept regardless."""
+    Filters out translations: e.g., Spanish text in an English transcription pass."""
     from langdetect import detect
     result = []
     for e in entries:
         txt = e["text"]
-        if len(txt) < 4:
-            result.append(e)
-            continue
         try:
             detected = detect(txt)
         except Exception:
@@ -124,6 +138,20 @@ def _filter_by_language(entries, expected_lang):
         if is_english == wants_english:
             result.append(e)
     return result
+
+
+def _dedup_entries(entries):
+    """Remove duplicate (start, text) pairs so no caption is burned twice.
+    Rounds start to 2 decimals: es/en passes over the same audio produce
+    nearly-identical (but not float-equal) start times."""
+    seen = set()
+    deduped = []
+    for e in entries:
+        key = (round(e["start"], 2), e["text"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(e)
+    return deduped
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────

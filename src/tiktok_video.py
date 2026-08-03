@@ -288,17 +288,6 @@ def process_video(
 
     clip = clip.resized((1080, 1920))
 
-    font_path = os.path.join(get_fonts_dir(), get_font())
-    if not os.path.exists(font_path):
-        font_path = os.path.join(get_fonts_dir(), "bold_font.ttf")
-    if not os.path.exists(font_path):
-        warning("No font found, using default")
-        font_path = None
-
-    if font_path:
-        info("Adding TikTok-style subtitles...")
-        clip = add_tiktok_subtitles(clip, srt_path, font_path)
-
     if mute_original:
         if music_dir and os.path.isdir(music_dir):
             songs = [
