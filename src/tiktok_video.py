@@ -229,6 +229,8 @@ def add_tiktok_subtitles(
     srt_path: str,
     font_path: str,
 ) -> CompositeVideoClip:
+    """DEPRECATED: use subtitle_engine.render_subtitles() instead.
+    Kept for backward compatibility with direct tiktok_video.py usage."""
     subs = parse_srt(srt_path)
 
     sub_clips = []

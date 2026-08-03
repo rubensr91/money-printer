@@ -5,7 +5,7 @@ uses DeepSeek to find viral moments, renders in panoramic format
 (original 16:9 centered on 9:16 with pixelated video background).
 No subtitles rendered, no face tracking.
 """
-import os, sys, re, json, uuid, subprocess, tempfile
+import os, sys, re, json, uuid, subprocess, tempfile, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Prepend project-local ffmpeg (NVENC-compatible build) to PATH
@@ -69,13 +69,24 @@ def err(msg):   _csafe(msg, "ERROR", "91")
 # ── YouTube download + captions ──────────────────────────────────────────
 
 def _extract_video_id(url):
-    """Extract YouTube video ID from various URL formats."""
+    """Extract stable video ID from URL. Same URL = same ID always.
+    YouTube: 11-char video ID from path. TikTok: numeric video ID.
+    Fallback: MD5 hash of the clean URL (stable across repeated downloads)."""
+    # YouTube patterns
     for pat in (r"v=([\w-]{11})", r"youtu\.be/([\w-]{11})", r"/(?:embed|shorts|v)/([\w-]{11})"):
         m = re.search(pat, url)
         if m:
             return m.group(1)
-    # Fallback: hash the URL
-    return str(uuid.uuid4())[:8]
+    # TikTok patterns: @user/video/123456789 or vm.tiktok.com/short
+    m = re.search(r'tiktok\.com/(?:@[\w.-]+/video/|.*?/)(\d+)', url)
+    if m:
+        return f"tt_{m.group(1)}"
+    # Instagram: reel ID from path
+    m = re.search(r'instagram\.com/(?:reel|p)/([\w-]+)', url)
+    if m:
+        return f"ig_{m.group(1)}"
+    # Fallback: MD5 hash of the URL (stable, same URL → same file)
+    return hashlib.md5(url.encode()).hexdigest()[:12]
 
 
 def is_playlist_url(url):
@@ -491,10 +502,27 @@ def parse_render_settings(instructions):
     if "dinamico" in low or "dynamic" in low:
         settings["dynamic"] = True
 
-    # Subtitles: burn burned-in captions (Whisper GPU transcription)
-    if any(kw in low for kw in ["subtítulos", "subtitulos", "subtitulos", "subtitular", "con subtítulo",
-                                 "subtitles", "subs", "con subtitulos"]):
+    # Subtitles: burned-in captions via subtitle_engine (Whisper GPU)
+    # Keywords: subtitulos, subtitles, subs
+    sub_kw = ["subtitulos", "subtítulos", "subtitulos", "subtitular",
+              "subtitles", "subs", "con subtitulo", "con subtítulos"]
+    if any(kw in low for kw in sub_kw):
         settings["subtitles"] = True
+        # Level: word vs phrase (default: phrase)
+        if any(kw in low for kw in ["palabra", "word", "karaoke", "por palabra"]):
+            settings["subtitles_level"] = "word"
+        else:
+            settings["subtitles_level"] = "phrase"
+        # Background box
+        if any(kw in low for kw in ["con fondo", "fondo subt", "con bg", "con caja", "con recuadro"]):
+            settings["subtitles_bg"] = True
+        # Language filter
+        if "idioma es" in low or "solo espanol" in low or "solo español" in low:
+            settings["subtitles_lang"] = ["es"]
+        elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low:
+            settings["subtitles_lang"] = ["en"]
+        else:
+            settings["subtitles_lang"] = ["es", "en"]  # default: both
 
     # Overlay text burned in clip — only when it's NOT a CTA (CTA has its own text)
     if not settings.get("cta") or not settings.get("cta_text"):
@@ -713,7 +741,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_bg=False, subtitles_lang=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -741,30 +769,25 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
 
     # ── Subtitles: Whisper GPU transcription + burned-in captions ──────
     if subtitles:
-        from tiktok_video import transcribe_audio, add_tiktok_subtitles
-        import uuid as _uuid
-        tmp_wav = os.path.join(output_dir, f"_subs_{_uuid.uuid4().hex[:8]}.wav")
-        tmp_srt = os.path.join(output_dir, f"_subs_{_uuid.uuid4().hex[:8]}.srt")
+        from subtitle_engine import transcribe_segment, render_subtitles, extract_audio_segment
+        tmp_wav = extract_audio_segment(video_path, clip_start, clip_end, output_dir)
         try:
-            # Extract audio of this segment only (via ffmpeg on the source)
-            subprocess.run([
-                _find_local_ffmpeg(), "-y", "-i", video_path,
-                "-ss", str(clip_start), "-to", str(clip_end),
-                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", tmp_wav,
-            ], check=True, capture_output=True)
-            ok(f"  Transcribing clip audio (Whisper GPU)...")
-            transcribe_audio(tmp_wav, tmp_srt, language="es")
-            font_path = os.path.join(ROOT_DIR, "fonts", "Arial.ttf")
-            if not os.path.exists(font_path):
-                font_path = "C:/Windows/Fonts/arial.ttf"
-            clip = add_tiktok_subtitles(clip, tmp_srt, font_path)
-            ok(f"  Subtitles burned into clip")
+            word_level = (subtitles_level == "word")
+            lang = subtitles_lang if subtitles_lang else ["es", "en"]
+            ok(f"  Transcribing clip audio ({'/'.join(lang)}, {'word' if word_level else 'phrase'})...")
+            entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
+            if entries:
+                style = {"bg": subtitles_bg, "position": 0.85}
+                clip = render_subtitles(clip, entries, style)
+                ok(f"  Subtitles burned: {len(entries)} entries"
+                   f"{' + bg box' if subtitles_bg else ''}")
+            else:
+                warn("  No subtitle entries produced")
         except Exception as e:
             warn(f"  Subtitles failed ({str(e)[:120]}), continuing without")
         finally:
-            for f in (tmp_wav, tmp_srt):
-                if os.path.exists(f):
-                    os.remove(f)
+            if os.path.exists(tmp_wav):
+                os.remove(tmp_wav)
 
     # ── CTA: full-screen blank card AFTER the clip (2s) ────────────────
     if cta:
@@ -964,6 +987,9 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
     subtitles = render.get("subtitles", False)
+    subtitles_level = render.get("subtitles_level", "phrase")
+    subtitles_bg = render.get("subtitles_bg", False)
+    subtitles_lang = render.get("subtitles_lang", ["es", "en"])
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -1016,7 +1042,9 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
 
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg, subtitles=subtitles)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg,
+                           subtitles=subtitles, subtitles_level=subtitles_level,
+                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang))
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -1039,7 +1067,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
-    subtitles = render.get("subtitles", False)
+    subtitles_bg = render.get("subtitles_bg", False)
+    subtitles_lang = render.get("subtitles_lang", ["es", "en"])
 
     video_path, caption_path = download_youtube(youtube_url, mp_dir)
     segments = parse_vtt(caption_path)
@@ -1059,7 +1088,9 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     for i, m in enumerate(moments):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg, subtitles=subtitles)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg,
+                           subtitles=subtitles, subtitles_level=subtitles_level,
+                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang))
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 
