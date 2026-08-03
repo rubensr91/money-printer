@@ -531,6 +531,12 @@ def parse_render_settings(instructions):
             settings["overlay_text"] = m.group(1).strip()
             if "negro" in low and "fondo blanco" in low:
                 settings["overlay_color"] = "black"
+
+    # DEFAULT: when instructions are present but no clip count, use 1 clip
+    # (don't cut unless user explicitly asks with "N clips")
+    if not settings.get("raw") and settings.get("mode") != "summary":
+        settings.setdefault("num_clips", 1)
+
     return settings
 
 
