@@ -110,18 +110,18 @@ def transcribe_segment(
 # Default style configuration
 DEFAULT_STYLE = {
     "bg": False,
-    "bg_color": (0, 0, 0),         # black RGB
-    "bg_opacity": 0.6,
-    "bg_padding": (16, 8),
-    "lang_colors": {               # text color per language (RGB tuples)
+    "bg_color": (0, 0, 0),
+    "bg_opacity": 0.7,
+    "bg_padding": (20, 10),
+    "lang_colors": {
         "es": (255, 213, 0),       # Spanish: yellow
         "en": (255, 255, 255),     # English: white
     },
     "default_color": (255, 255, 255),
     "stroke_color": (0, 0, 0),
-    "stroke_width": 2,
-    "position": 0.85,
-    "multi_lang_offset": 0.07,
+    "stroke_width": 4,             # TikTok standard: 4-6px black stroke
+    "position": 0.62,              # lower-middle third, above TikTok bottom UI
+    "multi_lang_offset": 0.06,
 }
 
 # Language display order (top to bottom)
@@ -203,11 +203,11 @@ def render_subtitles(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _find_font():
-    """Find best font for subtitles. Arial first (full Latin chars incl. accented uppercase)."""
+    """Find best font. Bold preferred (31% more readable on mobile per TikTok research)."""
     from config import ROOT_DIR
     candidates = [
-        "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",         # Arial Bold (best)
+        "C:/Windows/Fonts/arial.ttf",           # Arial Regular
         os.path.join(ROOT_DIR, "fonts", "Arial.ttf"),
         os.path.join(ROOT_DIR, "fonts", "bold_font.ttf"),
     ]
@@ -218,9 +218,8 @@ def _find_font():
 
 
 def _font_size(video_width: int) -> int:
-    """Dynamic font size based on video width (for 9:16 vertical)."""
-    # Base: 52px for 1080px width
-    return int(video_width * 0.055)
+    """Dynamic font size. Base: 70px for 1080px width (TikTok optimal 60-75px range)."""
+    return int(video_width * 0.065)
 
 
 # ── Convenience ──────────────────────────────────────────────────────────────
