@@ -491,6 +491,11 @@ def parse_render_settings(instructions):
     if "dinamico" in low or "dynamic" in low:
         settings["dynamic"] = True
 
+    # Subtitles: burn burned-in captions (Whisper GPU transcription)
+    if any(kw in low for kw in ["subtítulos", "subtitulos", "subtitulos", "subtitular", "con subtítulo",
+                                 "subtitles", "subs", "con subtitulos"]):
+        settings["subtitles"] = True
+
     # Overlay text burned in clip — only when it's NOT a CTA (CTA has its own text)
     if not settings.get("cta") or not settings.get("cta_text"):
         m = re.search(r'texto\s*["\u201c]\s*([^"\u201d]+)', instructions)
@@ -708,7 +713,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white"):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -733,6 +738,33 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     render_size = (_RENDER_W, _RENDER_H)
     clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                           dynamic_trajectory=trajectory, target_size=render_size)
+
+    # ── Subtitles: Whisper GPU transcription + burned-in captions ──────
+    if subtitles:
+        from tiktok_video import transcribe_audio, add_tiktok_subtitles
+        import uuid as _uuid
+        tmp_wav = os.path.join(output_dir, f"_subs_{_uuid.uuid4().hex[:8]}.wav")
+        tmp_srt = os.path.join(output_dir, f"_subs_{_uuid.uuid4().hex[:8]}.srt")
+        try:
+            # Extract audio of this segment only (via ffmpeg on the source)
+            subprocess.run([
+                _find_local_ffmpeg(), "-y", "-i", video_path,
+                "-ss", str(clip_start), "-to", str(clip_end),
+                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", tmp_wav,
+            ], check=True, capture_output=True)
+            ok(f"  Transcribing clip audio (Whisper GPU)...")
+            transcribe_audio(tmp_wav, tmp_srt, language="es")
+            font_path = os.path.join(ROOT_DIR, "fonts", "Arial.ttf")
+            if not os.path.exists(font_path):
+                font_path = "C:/Windows/Fonts/arial.ttf"
+            clip = add_tiktok_subtitles(clip, tmp_srt, font_path)
+            ok(f"  Subtitles burned into clip")
+        except Exception as e:
+            warn(f"  Subtitles failed ({str(e)[:120]}), continuing without")
+        finally:
+            for f in (tmp_wav, tmp_srt):
+                if os.path.exists(f):
+                    os.remove(f)
 
     # ── CTA: full-screen blank card AFTER the clip (2s) ────────────────
     if cta:
@@ -931,6 +963,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
+    subtitles = render.get("subtitles", False)
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -983,7 +1016,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
 
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg, subtitles=subtitles)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -1005,6 +1038,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     overlay_color = render.get("overlay_color", "white")
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
+    cta_bg = render.get("cta_bg", "white")
+    subtitles = render.get("subtitles", False)
 
     video_path, caption_path = download_youtube(youtube_url, mp_dir)
     segments = parse_vtt(caption_path)
@@ -1024,7 +1059,7 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     for i, m in enumerate(moments):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg, subtitles=subtitles)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 
