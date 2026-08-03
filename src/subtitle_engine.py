@@ -78,16 +78,21 @@ def transcribe_segment(
 
     if not languages:
         # Auto-detect: single transcription pass. Whisper detects the audio
-        # language itself. No language forcing = no duplicated subtitles
-        # (transcribing the same audio once per language produces the same
-        #  text in each pass since Whisper does not translate).
+        # language itself. Per-entry langdetect tags each phrase with its
+        # actual language → English phrases render white, Spanish yellow.
+        # One pass = no duplicated subtitles.
         segments, info = model.transcribe(audio_path, vad_filter=True,
                                            word_timestamps=word_level)
-        detected = getattr(info, "language", None) or "es"
-        entries = _segments_to_entries(segments, detected, word_level)
+        fallback_lang = getattr(info, "language", None) or "es"
+        entries = _segments_to_entries(segments, "auto", word_level)
+        for entry in entries:
+            try:
+                entry["language"] = detect(entry["text"])
+            except Exception:
+                entry["language"] = fallback_lang
         entries.sort(key=lambda e: e["start"])
         entries = _dedup_entries(entries)
-        logger.info(f"Subtitle engine: {len(entries)} entries (auto-detect: {detected})")
+        logger.info(f"Subtitle engine: {len(entries)} entries (auto-detect, per-entry lang)")
         return entries
 
     # Explicit single language: transcribe once in that language
@@ -169,8 +174,8 @@ DEFAULT_STYLE = {
     "default_color": (255, 255, 255),
     "stroke_color": (0, 0, 0),
     "stroke_width": 4,             # TikTok standard: 4-6px black stroke
-    "position": 0.62,              # lower-middle third, above TikTok bottom UI
-    "multi_lang_offset": 0.06,
+    "position": 0.82,              # bottom band, above TikTok UI (~84% down)
+    "multi_lang_offset": 0.04,
 }
 
 # Language display order (top to bottom)
