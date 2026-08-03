@@ -30,16 +30,29 @@ def _fmt_ts(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def _split_segment_naturally(text, start, end):
-    """Split text into natural 4-8 word chunks with proportional timing."""
+    """Split text into natural 4-8 word chunks. Only used as fallback for
+    very long texts that were not already chunked with word timestamps by
+    transcribe_segment(). Chunks are capped at ~24 chars so captions fit a
+    6.7\" phone screen without being cut."""
     words = text.split()
     n = len(words)
-    if n <= 6:
+    max_chars = 24
+    if n <= 8 and len(text) <= max_chars:
         return [(start, end, text)]
     target = max(4, min(8, n // max(1, int((end - start) * 1.5))))
     chunks = []
     i = 0
     while i < n:
         size = min(target, n - i)
+        # don't exceed char cap on the accumulated chunk
+        acc = 0
+        size = 0
+        while i + size < n and size < target:
+            wlen = len(words[i + size])
+            if size and acc + wlen + 1 > max_chars:
+                break
+            acc += wlen + (1 if acc else 0)
+            size += 1
         chunk = " ".join(words[i : i + size])
         cs = start + (end - start) * (i / n)
         ce = start + (end - start) * ((i + size) / n)
@@ -48,15 +61,21 @@ def _split_segment_naturally(text, start, end):
     return chunks
 
 def segments_to_srt_chunked(segments, output_path):
-    """Convert whisper segments to SRT, splitting long text into chunks."""
+    """Convert whisper segments to SRT. Entries from transcribe_segment()
+    already carry word-accurate start/end (phrase <=8 words or chunked by
+    real word timestamps), so emit them as-is; proportional splitting only
+    as last resort for oversized texts."""
     lines = []
     idx = 1
     for seg in segments:
-        chunks = _split_segment_naturally(seg["text"], seg["start"], seg["end"])
-        for cs, ce, text in chunks:
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        chunks = _split_segment_naturally(text, seg["start"], seg["end"])
+        for cs, ce, chunk_text in chunks:
             lines.append(str(idx))
             lines.append(f"{_fmt_ts(cs)} --> {_fmt_ts(ce)}")
-            lines.append(text)
+            lines.append(chunk_text)
             lines.append("")
             idx += 1
     with open(output_path, "w", encoding="utf-8") as f:

@@ -380,7 +380,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎬 <b>MoneyPrinter V2 Bot</b>\n\n"
         "Envíame un enlace de YouTube y te generaré clips.\n\n"
-        "Por defecto: 3 clips de 20-60s, formato panorámico 9:16.\n\n"
+        "Por defecto: 3 clips sin límite de duración, formato panorámico 9:16.\n"
+        "El troceado lo decides tú con instrucciones (ej: \"haz 2 clips de 3 minutos\", \"un clip de 5 min\").\n\n"
         "Personaliza con comandos (/clips, /fondo, /texto...) "
         "o añade instrucciones junto al enlace.\n\n"
         "/help para ver todos los comandos.",
@@ -392,10 +393,11 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current configuration."""
     chat_id = update.effective_chat.id
     c = bot_config.get_all(chat_id)
+    max_txt = "sin límite" if c["max_clip"] <= 0 else f"{c['max_clip']}s"
     lines = [
         f"🎛 <b>Configuración actual</b>",
         f"Clips: <code>{c['num_clips']}</code>",
-        f"Duración: <code>{c['min_clip']}s – {c['max_clip']}s</code>",
+        f"Duración: <code>{c['min_clip']}s – {max_txt}</code>",
         f"Fondo: <code>{c['bg']}</code>",
         f"Texto: <code>{c.get('overlay_text') or 'ninguno'}</code>",
     ]
@@ -418,19 +420,28 @@ async def cmd_clips(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_duracion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set duration range: /duracion 20 60"""
+    """Set duration range: /duracion 20 90  (0 = sin límite máximo)"""
     chat_id = update.effective_chat.id
-    if len(context.args) < 2:
-        await update.message.reply_text("Uso: /duracion &lt;min&gt; &lt;max&gt;  (segundos)")
+    if len(context.args) < 1:
+        await update.message.reply_text("Uso: /duracion &lt;min&gt; [max]  (segundos; max=0 o vacío = sin límite)")
         return
     try:
-        mn, mx = int(context.args[0]), int(context.args[1])
-        mn, mx = max(5, mn), max(mn + 5, mx)
+        mn = int(context.args[0])
+        mn = max(5, mn)
+        if len(context.args) >= 2:
+            mx = int(context.args[1])
+        else:
+            mx = mn
+        if mx <= 0:
+            mx = 0  # no upper limit
+        elif mx < mn:
+            mx = mn
         bot_config.set(chat_id, "min_clip", mn)
         bot_config.set(chat_id, "max_clip", mx)
-        await update.message.reply_text(f"✅ Duración: <b>{mn}s – {mx}s</b>", parse_mode="HTML")
+        max_txt = "sin límite" if mx <= 0 else f"{mx}s"
+        await update.message.reply_text(f"✅ Duración: <b>{mn}s – {max_txt}</b>", parse_mode="HTML")
     except ValueError:
-        await update.message.reply_text("Valores inválidos. Ej: /duracion 20 60")
+        await update.message.reply_text("Valores inválidos. Ej: /duracion 20 90")
 
 
 async def cmd_fondo(update: Update, context: ContextTypes.DEFAULT_TYPE):

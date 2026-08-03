@@ -36,17 +36,65 @@ def _segments_to_entries(segments, lang_code, word_level):
         else:
             words = txt.split()
             n = len(words)
-            if n <= 5:
-                entries.append({"start": seg.start, "end": seg.end, "text": txt,
+            seg_words = [w for w in (seg.words or []) if (w.word or "").strip()]
+            if n <= 5 and len(txt) <= MAX_CHARS_PER_LINE:
+                # Short phrase: use Whisper segment times, trimmed to real
+                # speech (kills trailing silence Whisper often appends).
+                start, end = seg.start, seg.end
+                if seg_words:
+                    start, end = seg_words[0].start, seg_words[-1].end
+                entries.append({"start": start, "end": end, "text": txt,
                                 "language": lang_code, "level": "phrase",
                                 "avg_logprob": logp})
+            elif len(seg_words) >= n:
+                # Long phrase: chunk by REAL word timestamps instead of
+                # dividing the segment into equal time slices. Speech rate is
+                # not uniform, so proportional chunking drifts from audio.
+                # Chunks are also capped at MAX_CHARS_PER_LINE so the caption
+                # never exceeds a 6.7" phone screen width.
+                chunk_size = max(3, n // max(1, int((seg.end - seg.start) * 2.0)))
+                chunk_gap = 0.75  # new chunk if silence gap between words
+                chunk = []
+                prev_end = None
+                chunk_chars = 0
+                for w in seg_words:
+                    wlen = len(w.word.strip())
+                    # Cut before this word if the chunk is full (words, chars
+                    # or silence gap)
+                    if chunk and (
+                        len(chunk) >= chunk_size
+                        or chunk_chars + wlen + 1 > MAX_CHARS_PER_LINE
+                        or (prev_end is not None and (w.start - prev_end) > chunk_gap)
+                    ):
+                        entries.append({"start": chunk[0].start, "end": chunk[-1].end,
+                                        "text": " ".join(x.word.strip() for x in chunk),
+                                        "language": lang_code, "level": "phrase",
+                                        "avg_logprob": logp})
+                        chunk = []
+                        chunk_chars = 0
+                    chunk.append(w)
+                    chunk_chars += wlen + (1 if chunk_chars else 0)
+                    prev_end = w.end
+                if chunk:
+                    entries.append({"start": chunk[0].start, "end": chunk[-1].end,
+                                    "text": " ".join(x.word.strip() for x in chunk),
+                                    "language": lang_code, "level": "phrase",
+                                    "avg_logprob": logp})
             else:
+                # Fallback (no word timestamps available): proportional split
+                # with char cap.
                 chunk_size = max(3, n // max(1, int((seg.end - seg.start) * 2.0)))
                 chunks = []
                 i = 0
                 while i < n:
-                    chunks.append(" ".join(words[i:i + chunk_size]))
-                    i += chunk_size
+                    chunk = []
+                    clen = 0
+                    while i < n and len(chunk) < chunk_size and clen + len(words[i]) + (1 if clen else 0) <= MAX_CHARS_PER_LINE:
+                        chunk.append(words[i])
+                        clen += len(words[i]) + (1 if clen else 0)
+                        i += 1
+                    if chunk:
+                        chunks.append(" ".join(chunk))
                 dur = seg.end - seg.start
                 chunk_dur = dur / len(chunks) if chunks else 0
                 for ci, chunk in enumerate(chunks):
@@ -82,7 +130,7 @@ def transcribe_segment(
         # actual language → English phrases render white, Spanish yellow.
         # One pass = no duplicated subtitles.
         segments, info = model.transcribe(audio_path, vad_filter=True,
-                                           word_timestamps=word_level)
+                                           word_timestamps=True)
         fallback_lang = getattr(info, "language", None) or "es"
         entries = _segments_to_entries(segments, "auto", word_level)
         for entry in entries:
@@ -99,7 +147,7 @@ def transcribe_segment(
     if len(languages) == 1:
         lang = languages[0]
         segments, info = model.transcribe(audio_path, vad_filter=True,
-                                           language=lang, word_timestamps=word_level)
+                                           language=lang, word_timestamps=True)
         entries = _segments_to_entries(segments, lang, word_level)
         entries.sort(key=lambda e: e["start"])
         entries = _dedup_entries(entries)
@@ -112,7 +160,7 @@ def transcribe_segment(
     for lang_code in languages:
         try:
             segments, _ = model.transcribe(audio_path, vad_filter=True,
-                                            language=lang_code, word_timestamps=word_level)
+                                            language=lang_code, word_timestamps=True)
             entries = _segments_to_entries(segments, lang_code, word_level)
             filtered = _filter_by_language(entries, lang_code)
             all_entries.extend(filtered)
@@ -162,21 +210,24 @@ def _dedup_entries(entries):
 # ── Rendering ────────────────────────────────────────────────────────────────
 
 # Default style configuration
+# UNIFIED design: white text on semi-transparent black box. One look across
+# all clips — no per-language colors, no bg toggle.
 DEFAULT_STYLE = {
-    "bg": False,
+    "bg": True,
     "bg_color": (0, 0, 0),
     "bg_opacity": 0.7,
     "bg_padding": (20, 10),
-    "lang_colors": {
-        "es": (255, 213, 0),       # Spanish: yellow
-        "en": (255, 255, 255),     # English: white
-    },
     "default_color": (255, 255, 255),
     "stroke_color": (0, 0, 0),
-    "stroke_width": 4,             # TikTok standard: 4-6px black stroke
+    "stroke_width": 2,             # subtle edge on light video areas
     "position": 0.82,              # bottom band, above TikTok UI (~84% down)
     "multi_lang_offset": 0.04,
 }
+
+# Max characters per subtitle line. Calculated for a 6.7" phone screen:
+# render at 540px wide (half-res, later upscaled ×2 to 1080), useful width
+# ~94% = ~507px, Arial Bold 35px ≈ 20px/char → ~24 chars fit comfortably.
+MAX_CHARS_PER_LINE = 24
 
 # Language display order (top to bottom)
 LANG_ORDER = ["en", "es"]
@@ -210,7 +261,7 @@ def render_subtitles(
         end = entry["end"]
         text = entry["text"]
         lang = entry.get("language", "en")
-        color = cfg["lang_colors"].get(lang, cfg["default_color"])
+        color = cfg["default_color"]
 
         font_path = _find_font()
         font_size = _font_size(clip.w)
@@ -219,13 +270,23 @@ def render_subtitles(
         lang_idx = LANG_ORDER.index(lang) if lang in LANG_ORDER else 0
         pos_y = int(clip.h * (cfg["position"] - lang_idx * cfg["multi_lang_offset"]))
 
-        # Create text (label method = exact size, no wrapping)
+        # Unified design: white text on black box. Use label (exact-size box)
+        # normally; if the rendered text is wider than the phone screen,
+        # fall back to caption method so it wraps instead of being cut.
+        max_w = int(clip.w * 0.94)
         txt = TextClip(
             text=text.upper(), font=font_path, font_size=font_size,
             color=color, stroke_color=cfg["stroke_color"],
             stroke_width=cfg["stroke_width"],
             method="label",
         )
+        if txt.w > max_w:
+            txt = TextClip(
+                text=text.upper(), font=font_path, font_size=font_size,
+                color=color, stroke_color=cfg["stroke_color"],
+                stroke_width=cfg["stroke_width"],
+                method="caption", size=(max_w, None), text_align="center",
+            )
         dur = max(end - start, 0.2)
 
         if cfg["bg"]:

@@ -14,8 +14,8 @@ _lock = threading.Lock()
 
 DEFAULTS = {
     "num_clips": 3,
-    "min_clip": 20,
-    "max_clip": 60,
+    "min_clip": 5,
+    "max_clip": 0,   # 0 = no upper limit; slicing decided via instructions
     "bg": "pixel",
     "overlay_text": None,
     "auto_upload": False,

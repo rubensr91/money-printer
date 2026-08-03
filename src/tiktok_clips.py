@@ -260,10 +260,11 @@ def parse_vtt(vtt_path):
 
 # ── DeepSeek clip selection ──────────────────────────────────────────────
 
-def find_best_moments(segments, video_duration, min_clip=20, max_clip=60, num_clips=3, instructions=None):
+def find_best_moments(segments, video_duration, min_clip=5, max_clip=0, num_clips=3, instructions=None):
     """Use DeepSeek to find most viral moments from captions.
     Then snap boundaries to nearest segment to avoid mid-sentence cuts.
-    `instructions` (optional) = user-provided directives that take priority."""
+    `instructions` (optional) = user-provided directives that take priority.
+    max_clip=0 (default) = NO upper limit; user instructions decide chunking."""
     info("Analyzing captions with DeepSeek to find best moments...")
     if instructions:
         warn(f"User instructions: {instructions[:200]}")
@@ -272,8 +273,12 @@ def find_best_moments(segments, video_duration, min_clip=20, max_clip=60, num_cl
     for seg in segments:
         transcript += f"[{seg['start']:.1f}s-{seg['end']:.1f}s] {seg['text']}\n"
 
+    # max_clip=0 means unlimited; cap at video length only for the prompt text
+    eff_max = video_duration if (not max_clip or max_clip <= 0) else min(max_clip, video_duration)
+
     user_rules = f"""
-- El video dura {video_duration:.0f}s. Busca {num_clips} clips de {min_clip}s a {max_clip}s.
+- El video dura {video_duration:.0f}s. Busca {num_clips} clips de al menos {min_clip}s.
+- {'El clip puede durar hasta ' + str(int(eff_max)) + 's (sin limite fijo, usa tu criterio segun el contenido).' if (not max_clip or max_clip <= 0) else 'Cada clip entre ' + str(min_clip) + 's y ' + str(int(eff_max)) + 's.'}
 - Mas vale 1 clip bueno de 30s que 3 malos de 15s.
 - NO cortes frases a medias NUNCA. Mira los timestamps de la transcripcion, y ajusta start/end para que coincidan EXACTAMENTE con el inicio/fin de una frase completa.
 - Prioriza clips de >{min_clip}s. Si no hay suficientes momentos largos, reduce el numero de clips.
@@ -379,7 +384,7 @@ Transcripcion con timestamps:
         retry_prompt = f"""Transcripcion de un video de {video_duration:.0f}s con timestamps.
 Devuelve SOLO JSON con {num_clips} clips virales. CADA clip:
 - start y end deben ser timestamps EXACTOS de la transcripcion (frases completas, sin cortes)
-- duracion entre {min_clip}s y {max_clip}s
+- duracion de al menos {min_clip}s{' (sin limite maximo)' if (not max_clip or max_clip <= 0) else f' entre {min_clip}s y {int(eff_max)}s'}
 - usa los timestamps [X.Xs-Y.Ys] de la transcripcion como referencia
 
 ADEMAS incluye:
@@ -413,10 +418,13 @@ Transcripcion:
     return validated, description, tags
 
 
-def _split_timebased(duration, min_clip=20, max_clip=60, num_clips=4):
-    """Fallback: split video duration into N clips evenly."""
-    if max_clip > duration:
-        max_clip = duration
+def _split_timebased(duration, min_clip=5, max_clip=0, num_clips=4):
+    """Fallback: split video duration into N clips evenly.
+    max_clip=0 (default) = no upper limit (whole video if num_clips=1)."""
+    if max_clip and max_clip > 0 and max_clip < duration:
+        pass
+    else:
+        max_clip = duration  # no cap: the only bound is the video itself
     if min_clip > max_clip:
         min_clip = max_clip
     chunk = min(max_clip, duration / num_clips)
@@ -482,11 +490,24 @@ def parse_render_settings(instructions):
     if m:
         settings["num_clips"] = int(m.group(1))
 
-    m = re.search(r"(\d+)\s*(?:segundos?|s)\b", low)
+    # Duration: "de 20 a 90 segundos", "de 90 segundos", "de 2 minutos",
+    # "20 a 90s", "2 min". Range wins over single value.
+    m = re.search(r"(\d+)\s*(?:a|hasta|-)\s*(\d+)\s*(?:segundos?|s|min|minutos?)\b", low)
     if m:
-        d = int(m.group(1))
-        settings["min_clip"] = d
-        settings["max_clip"] = d
+        settings["min_clip"] = int(m.group(1))
+        settings["max_clip"] = int(m.group(2))
+    else:
+        m = re.search(r"(\d+)\s*(?:segundos?|s)\b", low)
+        if m:
+            d = int(m.group(1))
+            settings["min_clip"] = d
+            settings["max_clip"] = d
+        else:
+            m = re.search(r"(\d+)\s*(?:minutos?|min)\b", low)
+            if m:
+                d = int(m.group(1)) * 60
+                settings["min_clip"] = d
+                settings["max_clip"] = d
 
     if "horizontal" in low or "sin fondo" in low or "16:9" in low or "16/9" in low:
         settings["bg"] = "none"
@@ -513,9 +534,8 @@ def parse_render_settings(instructions):
             settings["subtitles_level"] = "word"
         else:
             settings["subtitles_level"] = "phrase"
-        # Background box
-        if any(kw in low for kw in ["con fondo", "fondo subt", "con bg", "con caja", "con recuadro"]):
-            settings["subtitles_bg"] = True
+        # NOTE: subtitle design is fixed (white text, black box). Only the
+        # position and language are user-configurable.
         # Language filter
         if "idioma es" in low or "solo espanol" in low or "solo español" in low or "en espanol" in low or "en español" in low:
             settings["subtitles_lang"] = ["es"]
@@ -757,7 +777,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_bg=False, subtitles_lang=None, subtitles_position=None):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_lang=None, subtitles_position=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -793,12 +813,13 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             ok(f"  Transcribing clip audio ({'/'.join(lang) if lang else 'auto'}, {'word' if word_level else 'phrase'})...")
             entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
             if entries:
-                style = {"bg": subtitles_bg}
+                # Unified subtitle style (white text, black box) lives in
+                # subtitle_engine.DEFAULT_STYLE — only position is configurable.
+                style = {}
                 if subtitles_position is not None:
                     style["position"] = subtitles_position
                 clip = render_subtitles(clip, entries, style)
-                ok(f"  Subtitles burned: {len(entries)} entries"
-                   f"{' + bg box' if subtitles_bg else ''}")
+                ok(f"  Subtitles burned: {len(entries)} entries")
             else:
                 warn("  No subtitle entries produced")
         except Exception as e:
@@ -940,13 +961,14 @@ def _find_local_ffmpeg():
     return "ffmpeg"
 
 
-def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=None, instructions=None,
+def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None, instructions=None,
                 default_bg="pixel", default_overlay_text=None):
     """Download video, extract captions, find viral moments via DeepSeek,
     render clips in panoramic format.
     `instructions` (optional) = user directives passed to DeepSeek as priorities.
     `default_bg` = fallback background when instructions don't specify one.
-    `default_overlay_text` = fallback overlay text."""
+    `default_overlay_text` = fallback overlay text.
+    max_clip=0 (default) = no upper limit; slicing decided by instructions."""
     mp_dir = os.path.join(ROOT_DIR, ".mp")
     os.makedirs(mp_dir, exist_ok=True)
 
@@ -1006,7 +1028,6 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     cta_bg = render.get("cta_bg", "white")
     subtitles = render.get("subtitles", False)
     subtitles_level = render.get("subtitles_level", "phrase")
-    subtitles_bg = render.get("subtitles_bg", False)
     subtitles_lang = render.get("subtitles_lang", ["es", "en"])
     subtitles_position = render.get("subtitles_position")
     if overlay_text:
@@ -1063,7 +1084,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=subtitles_lang,
+                           subtitles_lang=subtitles_lang,
                            subtitles_position=subtitles_position)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
@@ -1073,7 +1094,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
         reporter.update("Clips generados", 95, f"{total} clips listos")
 
 
-def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
+def main(youtube_url, min_clip=5, max_clip=0, num_clips=4, instructions=None):
     mp_dir = os.path.join(ROOT_DIR, ".mp")
     os.makedirs(mp_dir, exist_ok=True)
 
@@ -1087,7 +1108,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
-    subtitles_bg = render.get("subtitles_bg", False)
+    subtitles = render.get("subtitles", False)
+    subtitles_level = render.get("subtitles_level", "phrase")
     subtitles_lang = render.get("subtitles_lang", ["es", "en"])
     subtitles_position = render.get("subtitles_position")
 
@@ -1111,7 +1133,7 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=subtitles_lang,
+                           subtitles_lang=subtitles_lang,
                            subtitles_position=subtitles_position)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})

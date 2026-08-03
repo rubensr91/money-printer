@@ -126,7 +126,8 @@ This is committed in `telegram_bot.py` (commit `fd68855`).
 
 ### Configuration
 - Per-chat settings: `bot_config.py` → `.mp/bot_config.json`  
-  Defaults: `num_clips=3, min_clip=20, max_clip=60, bg="pixel"`
+  Defaults: `num_clips=3, min_clip=5, max_clip=0 (sin límite), bg="pixel"`  
+  El troceado lo decide el usuario vía instrucciones ("haz 2 clips de 3 minutos") o `/duracion min [max]` (max=0 = sin límite).
 - Telegram token + chat_id: `.mp/telegram.json`  
 - GPU/Whisper: `config.py` → `get_whisper_model()` (medium), `get_whisper_device()` (cuda)
 

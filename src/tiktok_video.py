@@ -127,7 +127,8 @@ def transcribe_audio(audio_path: str, output_srt: str, language: str = "es") -> 
         compute_type=get_whisper_compute_type(),
     )
 
-    segments, _ = model.transcribe(audio_path, vad_filter=True, language=language)
+    segments, _ = model.transcribe(audio_path, vad_filter=True, language=language,
+                                   word_timestamps=True)
 
     lines = []
     idx = 1
@@ -139,23 +140,72 @@ def transcribe_audio(audio_path: str, output_srt: str, language: str = "es") -> 
             continue
 
         words = text.split()
-        if len(words) <= 4:
+        seg_words = [w for w in (segment.words or []) if (w.word or "").strip()]
+        # Max chars per line: ~24 fits a 6.7" phone screen (render 540px wide,
+        # ~94% useful width, Arial Bold 35px ≈ 20px/char).
+        max_chars = 24
+        if len(words) <= 4 and len(text) <= max_chars:
+            # Trim to real speech (kills trailing silence Whisper appends)
+            if seg_words:
+                start, end = seg_words[0].start, seg_words[-1].end
             lines.append(str(idx))
             lines.append(f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}")
             lines.append(text)
             lines.append("")
             idx += 1
+        elif len(seg_words) >= len(words):
+            # Chunk by REAL word timestamps, not equal time slices (speech
+            # rate is not uniform → proportional chunks drift from audio).
+            # Also capped by max_chars so captions fit the phone screen.
+            n = len(words)
+            chunk_size = max(2, n // max(1, int((end - start) * 2.5)))
+            chunk_gap = 0.75  # new chunk if silence gap between words
+            chunk = []
+            chunk_chars = 0
+            prev_end = None
+            for w in seg_words:
+                wlen = len(w.word.strip())
+                if chunk and (prev_end is not None and (w.start - prev_end) > chunk_gap
+                              or chunk_chars + wlen + 1 > max_chars
+                              or len(chunk) >= chunk_size):
+                    cs = _format_srt_timestamp(chunk[0].start)
+                    ce = _format_srt_timestamp(chunk[-1].end)
+                    lines.append(str(idx))
+                    lines.append(f"{cs} --> {ce}")
+                    lines.append(" ".join(x.word.strip() for x in chunk))
+                    lines.append("")
+                    idx += 1
+                    chunk = []
+                    chunk_chars = 0
+                chunk.append(w)
+                chunk_chars += wlen + (1 if chunk_chars else 0)
+                prev_end = w.end
+            if chunk:
+                cs = _format_srt_timestamp(chunk[0].start)
+                ce = _format_srt_timestamp(chunk[-1].end)
+                lines.append(str(idx))
+                lines.append(f"{cs} --> {ce}")
+                lines.append(" ".join(x.word.strip() for x in chunk))
+                lines.append("")
+                idx += 1
         else:
+            # Fallback (no word timestamps): proportional split with char cap
             n = len(words)
             chunk_size = max(2, n // max(1, int((end - start) * 2.5)))
             chunks = []
             i = 0
             while i < n:
-                chunks.append(" ".join(words[i : i + chunk_size]))
-                i += chunk_size
+                chunk = []
+                clen = 0
+                while i < n and len(chunk) < chunk_size and clen + len(words[i]) + (1 if clen else 0) <= max_chars:
+                    chunk.append(words[i])
+                    clen += len(words[i]) + (1 if clen else 0)
+                    i += 1
+                if chunk:
+                    chunks.append(" ".join(chunk))
 
             dur = end - start
-            chunk_dur = dur / len(chunks)
+            chunk_dur = dur / len(chunks) if chunks else 0
             for ci, chunk in enumerate(chunks):
                 cs = _format_srt_timestamp(start + ci * chunk_dur)
                 ce = _format_srt_timestamp(start + (ci + 1) * chunk_dur)
