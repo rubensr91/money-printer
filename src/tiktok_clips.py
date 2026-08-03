@@ -1063,7 +1063,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang),
+                           subtitles_bg=subtitles_bg, subtitles_lang=subtitles_lang,
                            subtitles_position=subtitles_position)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
@@ -1111,7 +1111,7 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang),
+                           subtitles_bg=subtitles_bg, subtitles_lang=subtitles_lang,
                            subtitles_position=subtitles_position)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
