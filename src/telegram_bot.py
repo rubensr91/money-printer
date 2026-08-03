@@ -149,6 +149,7 @@ async def _capture_loop(app):
     """PTB 22.x dropped Application.loop; capture the running loop instead."""
     global _app_loop
     _app_loop = asyncio.get_running_loop()
+    _ensure_worker()
 
 
 def _ensure_worker():
@@ -835,7 +836,6 @@ def main():
     conn.commit()
     conn.close()
 
-    _ensure_worker()
     logger.info("Bot started. Listening for YouTube URLs...")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
