@@ -18,6 +18,60 @@ logger = logging.getLogger(__name__)
 
 # ── Transcription ───────────────────────────────────────────────────────────
 
+def _segments_to_entries(segments, default_lang, word_level):
+    """Convert Whisper segments to subtitle entry dicts with language tag."""
+    entries = []
+    for seg in segments:
+        txt = (seg.text or "").strip()
+        if not txt:
+            continue
+        if word_level and seg.words:
+            for w in seg.words:
+                wt = (w.word or "").strip()
+                if wt:
+                    entries.append({"start": w.start, "end": w.end, "text": wt,
+                                    "language": default_lang, "level": "word"})
+        else:
+            words = txt.split()
+            n = len(words)
+            if n <= 5:
+                entries.append({"start": seg.start, "end": seg.end, "text": txt,
+                                "language": default_lang, "level": "phrase"})
+            else:
+                chunk_size = max(3, n // max(1, int((seg.end - seg.start) * 2.0)))
+                chunks = []
+                i = 0
+                while i < n:
+                    chunks.append(" ".join(words[i:i + chunk_size]))
+                    i += chunk_size
+                dur = seg.end - seg.start
+                chunk_dur = dur / len(chunks) if chunks else 0
+                for ci, chunk in enumerate(chunks):
+                    entries.append({"start": seg.start + ci * chunk_dur,
+                                    "end": seg.start + (ci + 1) * chunk_dur,
+                                    "text": chunk, "language": default_lang, "level": "phrase"})
+    return entries
+
+
+def _transcribe_multilang(audio_path, model, languages, word_level):
+    """Transcribe once per language, merge entries sorted by time.
+    Each language gets its own color/position in the render step."""
+    all_entries = []
+    for lang_code in languages:
+        try:
+            segments, info = model.transcribe(audio_path, vad_filter=True,
+                                               language=lang_code, word_timestamps=word_level)
+            entries = _segments_to_entries(segments, lang_code, word_level)
+            all_entries.extend(entries)
+            logger.info(f"  Multi-lang: {len(entries)} entries for {lang_code}")
+        except Exception as e:
+            logger.warning(f"  Multi-lang {lang_code} failed: {e}")
+
+    all_entries.sort(key=lambda e: e["start"])
+    logger.info(f"Subtitle engine: {len(all_entries)} total entries, multi-lang={languages}")
+    return all_entries
+
+
 def transcribe_segment(
     audio_path: str,
     word_level: bool = False,
@@ -45,64 +99,14 @@ def transcribe_segment(
     )
 
     # Transcribe
-    lang = languages[0] if languages and len(languages) == 1 else None
-    multilingual = languages is not None and len(languages) > 1
-
-    segments, info = model.transcribe(
-        audio_path,
-        vad_filter=True,
-        language=lang,
-        word_timestamps=word_level,
-        multilingual=multilingual,
-    )
-    detected_lang = info.language
-
-    entries = []
-    for seg in segments:
-        seg_lang = getattr(seg, "language", detected_lang) or detected_lang
-
-        # Filter: only keep requested languages (if specified)
-        if languages and seg_lang not in languages:
-            continue
-
-        if word_level and seg.words:
-            for w in seg.words:
-                txt = (w.word or "").strip()
-                if txt:
-                    entries.append({
-                        "start": w.start, "end": w.end,
-                        "text": txt, "language": seg_lang, "level": "word",
-                    })
-        else:
-            txt = (seg.text or "").strip()
-            if not txt:
-                continue
-            # Phrase-level: split long segments into readable chunks
-            words = txt.split()
-            n = len(words)
-            if n <= 5:
-                entries.append({
-                    "start": seg.start, "end": seg.end,
-                    "text": txt, "language": seg_lang, "level": "phrase",
-                })
-            else:
-                chunk_size = max(3, n // max(1, int((seg.end - seg.start) * 2.0)))
-                chunks = []
-                i = 0
-                while i < n:
-                    chunks.append(" ".join(words[i:i + chunk_size]))
-                    i += chunk_size
-                dur = seg.end - seg.start
-                chunk_dur = dur / len(chunks)
-                for ci, chunk in enumerate(chunks):
-                    entries.append({
-                        "start": seg.start + ci * chunk_dur,
-                        "end": seg.start + (ci + 1) * chunk_dur,
-                        "text": chunk, "language": seg_lang, "level": "phrase",
-                    })
-
-    logger.info(f"Subtitle engine: {len(entries)} entries, lang={detected_lang}, word_level={word_level}")
-    return entries
+    # Multiple languages requested → transcribe once per language, merge
+    if languages and len(languages) > 1:
+        return _transcribe_multilang(audio_path, model, languages, word_level)
+    else:
+        lang = languages[0] if languages else None
+        segments, info = model.transcribe(audio_path, vad_filter=True,
+                                           language=lang, word_timestamps=word_level)
+        return _segments_to_entries(segments, info.language, word_level)
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
