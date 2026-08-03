@@ -783,7 +783,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             ok(f"  Transcribing clip audio ({'/'.join(lang)}, {'word' if word_level else 'phrase'})...")
             entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
             if entries:
-                style = {"bg": subtitles_bg, "position": 0.85}
+                style = {"bg": subtitles_bg}
                 clip = render_subtitles(clip, entries, style)
                 ok(f"  Subtitles burned: {len(entries)} entries"
                    f"{' + bg box' if subtitles_bg else ''}")
