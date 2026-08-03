@@ -64,8 +64,7 @@ def transcribe_segment(
 ) -> list[dict]:
     """Transcribe audio with faster-whisper (GPU).
     When multiple languages requested, transcribes once per language,
-    filters with langdetect to keep only original-language text (no translations).
-    """
+    keeps entries whose text actually matches the expected language (langdetect)."""
     from faster_whisper import WhisperModel
     from config import get_whisper_model, get_whisper_device, get_whisper_compute_type
     from langdetect import detect, DetectorFactory
@@ -79,36 +78,35 @@ def transcribe_segment(
     target_langs = languages or ["es", "en"]
 
     if len(target_langs) == 1:
-        # Single language: transcribe once, all entries tagged with that language
         lang = target_langs[0]
         segments, info = model.transcribe(audio_path, vad_filter=True,
                                            language=lang, word_timestamps=word_level)
         return _segments_to_entries(segments, lang, word_level)
 
-    # Bilingual: transcribe once per language, filter out translations via langdetect
+    # Bilingual: transcribe once per language, filter by langdetect
+    # (Whisper sometimes outputs English words even with language="es",
+    #  so we check that the text actually matches the expected language)
     all_entries = []
     for lang_code in target_langs:
         try:
             segments, _ = model.transcribe(audio_path, vad_filter=True,
                                             language=lang_code, word_timestamps=word_level)
             entries = _segments_to_entries(segments, lang_code, word_level)
-            # Filter: keep only entries where text matches the transcription language
             filtered = _filter_by_language(entries, lang_code)
             all_entries.extend(filtered)
-            logger.info(f"  {lang_code}: {len(entries)} raw -> {len(filtered)} filtered")
+            logger.info(f"  {lang_code}: {len(entries)} raw -> {len(filtered)} kept")
         except Exception as e:
             logger.warning(f"  {lang_code} transcription failed: {e}")
 
     all_entries.sort(key=lambda e: e["start"])
-    # Remove overlaps: keep higher-confidence entries (likely original language)
-    all_entries = _dedupe_by_confidence(all_entries)
     logger.info(f"Subtitle engine: {len(all_entries)} total entries, bilingual")
     return all_entries
 
 
 def _filter_by_language(entries, expected_lang):
-    """Keep only entries whose text is detected as the expected language.
-    Uses confidence (avg_logprob) to break ties: higher confidence = original language."""
+    """Keep entries whose text is detected as the expected language.
+    Filters out translations: e.g., Spanish text in an English transcription pass.
+    Short text (<4 chars) is kept regardless."""
     from langdetect import detect
     result = []
     for e in entries:
@@ -125,31 +123,6 @@ def _filter_by_language(entries, expected_lang):
         wants_english = (expected_lang == "en")
         if is_english == wants_english:
             result.append(e)
-    return result
-
-
-def _dedupe_by_confidence(entries):
-    """Remove overlapping entries, keeping the one with higher avg_logprob.
-    When two transcriptions cover the same timestamp, the one with higher
-    confidence is more likely the original language (not a translation)."""
-    if not entries:
-        return entries
-
-    # Sort by start time, then by avg_logprob descending (higher confidence first)
-    entries.sort(key=lambda e: (e["start"], -(e.get("avg_logprob", -99))))
-
-    result = []
-    for e in entries:
-        overlap = False
-        for kept in result:
-            # Check timestamp overlap
-            if e["start"] < kept["end"] and e["end"] > kept["start"]:
-                # e overlaps with a kept entry — skip e (kept has higher confidence)
-                overlap = True
-                break
-        if not overlap:
-            result.append(e)
-
     return result
 
 
@@ -209,39 +182,35 @@ def render_subtitles(
         font_path = _find_font()
         font_size = _font_size(clip.w)
 
-        # Vertical position: offset by language to avoid overlap
+        # Vertical position: offset by language, clamp to prevent overflow
         lang_idx = LANG_ORDER.index(lang) if lang in LANG_ORDER else 0
         pos_y = int(clip.h * (cfg["position"] - lang_idx * cfg["multi_lang_offset"]))
 
+        # Create text (label method = exact size, no wrapping)
+        txt = TextClip(
+            text=text.upper(), font=font_path, font_size=font_size,
+            color=color, stroke_color=cfg["stroke_color"],
+            stroke_width=cfg["stroke_width"],
+            method="label",
+        )
+        dur = max(end - start, 0.2)
+
         if cfg["bg"]:
-            # Create text + background box
-            txt = TextClip(
-                text=text.upper(), font=font_path, font_size=font_size,
-                color=color, stroke_color=cfg["stroke_color"],
-                stroke_width=cfg["stroke_width"],
-                method="label",
-            )
             w, h = txt.w + cfg["bg_padding"][0], txt.h + cfg["bg_padding"][1]
             bg = ColorClip(size=(w, h), color=cfg["bg_color"])
             bg = bg.with_opacity(cfg["bg_opacity"])
             frame = CompositeVideoClip([
                 bg.with_position(("center", "center")),
                 txt.with_position(("center", "center")),
-            ]).with_duration(max(end - start, 0.2))
-            frame = frame.with_position(("center", pos_y - h // 2))
-            frame = frame.with_start(start)
+            ]).with_duration(dur)
         else:
-            # Text only with stroke
-            frame = TextClip(
-                text=text.upper(), font=font_path, font_size=font_size,
-                color=color, stroke_color=cfg["stroke_color"],
-                stroke_width=cfg["stroke_width"],
-                method="caption",
-                size=(int(clip.w * 0.9), None),
-                text_align="center",
-            ).with_duration(max(end - start, 0.2))
-            frame = frame.with_position(("center", pos_y))
-            frame = frame.with_start(start)
+            frame = txt.with_duration(dur)
+
+        # Center vertically at pos_y, clamp to keep fully inside frame
+        top = pos_y - frame.h // 2
+        top = max(0, min(top, clip.h - frame.h))
+        frame = frame.with_position(("center", top))
+        frame = frame.with_start(start)
 
         sub_clips.append(frame)
 

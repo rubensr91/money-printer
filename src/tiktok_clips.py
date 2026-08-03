@@ -524,6 +524,14 @@ def parse_render_settings(instructions):
         else:
             settings["subtitles_lang"] = ["es", "en"]  # default: both
 
+        # Subtitle position
+        if "abajo" in low or "inferior" in low:
+            settings["subtitles_position"] = 0.75
+        elif "arriba" in low or "superior" in low:
+            settings["subtitles_position"] = 0.35
+        elif "en medio" in low or "centro" in low or "centrado" in low:
+            settings["subtitles_position"] = 0.50
+
     # Overlay text burned in clip — only when it's NOT a CTA (CTA has its own text)
     if not settings.get("cta") or not settings.get("cta_text"):
         m = re.search(r'texto\s*["\u201c]\s*([^"\u201d]+)', instructions)
@@ -747,7 +755,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_bg=False, subtitles_lang=None):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_bg=False, subtitles_lang=None, subtitles_position=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -784,6 +792,8 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
             if entries:
                 style = {"bg": subtitles_bg}
+                if subtitles_position is not None:
+                    style["position"] = subtitles_position
                 clip = render_subtitles(clip, entries, style)
                 ok(f"  Subtitles burned: {len(entries)} entries"
                    f"{' + bg box' if subtitles_bg else ''}")
@@ -996,6 +1006,7 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     subtitles_level = render.get("subtitles_level", "phrase")
     subtitles_bg = render.get("subtitles_bg", False)
     subtitles_lang = render.get("subtitles_lang", ["es", "en"])
+    subtitles_position = render.get("subtitles_position")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -1050,7 +1061,8 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang))
+                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang),
+                           subtitles_position=subtitles_position)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -1075,6 +1087,7 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     cta_bg = render.get("cta_bg", "white")
     subtitles_bg = render.get("subtitles_bg", False)
     subtitles_lang = render.get("subtitles_lang", ["es", "en"])
+    subtitles_position = render.get("subtitles_position")
 
     video_path, caption_path = download_youtube(youtube_url, mp_dir)
     segments = parse_vtt(caption_path)
@@ -1096,7 +1109,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang))
+                           subtitles_bg=subtitles_bg, subtitles_lang=list(subtitles_lang),
+                           subtitles_position=subtitles_position)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 
