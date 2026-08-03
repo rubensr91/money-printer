@@ -18,25 +18,28 @@ logger = logging.getLogger(__name__)
 
 # ── Transcription ───────────────────────────────────────────────────────────
 
-def _segments_to_entries(segments, default_lang, word_level):
-    """Convert Whisper segments to subtitle entry dicts with language tag."""
+def _segments_to_entries(segments, lang_code, word_level):
+    """Convert Whisper segments to subtitle entry dicts."""
     entries = []
     for seg in segments:
         txt = (seg.text or "").strip()
         if not txt:
             continue
+        logp = getattr(seg, "avg_logprob", -99) or -99
         if word_level and seg.words:
             for w in seg.words:
                 wt = (w.word or "").strip()
                 if wt:
                     entries.append({"start": w.start, "end": w.end, "text": wt,
-                                    "language": default_lang, "level": "word"})
+                                    "language": lang_code, "level": "word",
+                                    "avg_logprob": logp})
         else:
             words = txt.split()
             n = len(words)
             if n <= 5:
                 entries.append({"start": seg.start, "end": seg.end, "text": txt,
-                                "language": default_lang, "level": "phrase"})
+                                "language": lang_code, "level": "phrase",
+                                "avg_logprob": logp})
             else:
                 chunk_size = max(3, n // max(1, int((seg.end - seg.start) * 2.0)))
                 chunks = []
@@ -49,27 +52,9 @@ def _segments_to_entries(segments, default_lang, word_level):
                 for ci, chunk in enumerate(chunks):
                     entries.append({"start": seg.start + ci * chunk_dur,
                                     "end": seg.start + (ci + 1) * chunk_dur,
-                                    "text": chunk, "language": default_lang, "level": "phrase"})
+                                    "text": chunk, "language": lang_code, "level": "phrase",
+                                    "avg_logprob": logp})
     return entries
-
-
-def _transcribe_multilang(audio_path, model, languages, word_level):
-    """Transcribe once per language, merge entries sorted by time.
-    Each language gets its own color/position in the render step."""
-    all_entries = []
-    for lang_code in languages:
-        try:
-            segments, info = model.transcribe(audio_path, vad_filter=True,
-                                               language=lang_code, word_timestamps=word_level)
-            entries = _segments_to_entries(segments, lang_code, word_level)
-            all_entries.extend(entries)
-            logger.info(f"  Multi-lang: {len(entries)} entries for {lang_code}")
-        except Exception as e:
-            logger.warning(f"  Multi-lang {lang_code} failed: {e}")
-
-    all_entries.sort(key=lambda e: e["start"])
-    logger.info(f"Subtitle engine: {len(all_entries)} total entries, multi-lang={languages}")
-    return all_entries
 
 
 def transcribe_segment(
@@ -78,35 +63,94 @@ def transcribe_segment(
     languages: list[str] | None = None,
 ) -> list[dict]:
     """Transcribe audio with faster-whisper (GPU).
-
-    Args:
-        audio_path: WAV file (16kHz mono)
-        word_level: If True, one entry per word with exact timestamps.
-        languages: List of language codes to accept (e.g., ["es","en"]).
-                   If None, auto-detect. Multi-lang enables multilingual mode.
-
-    Returns:
-        List of dicts: {start, end, text, language, level}
-        level = "word" or "phrase"
+    When multiple languages requested, transcribes once per language,
+    filters with langdetect to keep only original-language text (no translations).
     """
     from faster_whisper import WhisperModel
     from config import get_whisper_model, get_whisper_device, get_whisper_compute_type
+    from langdetect import detect, DetectorFactory
+    DetectorFactory.seed = 0
 
     model = WhisperModel(
-        get_whisper_model(),
-        device=get_whisper_device(),
+        get_whisper_model(), device=get_whisper_device(),
         compute_type=get_whisper_compute_type(),
     )
 
-    # Transcribe
-    # Multiple languages requested → transcribe once per language, merge
-    if languages and len(languages) > 1:
-        return _transcribe_multilang(audio_path, model, languages, word_level)
-    else:
-        lang = languages[0] if languages else None
+    target_langs = languages or ["es", "en"]
+
+    if len(target_langs) == 1:
+        # Single language: transcribe once, all entries tagged with that language
+        lang = target_langs[0]
         segments, info = model.transcribe(audio_path, vad_filter=True,
                                            language=lang, word_timestamps=word_level)
-        return _segments_to_entries(segments, info.language, word_level)
+        return _segments_to_entries(segments, lang, word_level)
+
+    # Bilingual: transcribe once per language, filter out translations via langdetect
+    all_entries = []
+    for lang_code in target_langs:
+        try:
+            segments, _ = model.transcribe(audio_path, vad_filter=True,
+                                            language=lang_code, word_timestamps=word_level)
+            entries = _segments_to_entries(segments, lang_code, word_level)
+            # Filter: keep only entries where text matches the transcription language
+            filtered = _filter_by_language(entries, lang_code)
+            all_entries.extend(filtered)
+            logger.info(f"  {lang_code}: {len(entries)} raw -> {len(filtered)} filtered")
+        except Exception as e:
+            logger.warning(f"  {lang_code} transcription failed: {e}")
+
+    all_entries.sort(key=lambda e: e["start"])
+    # Remove overlaps: keep higher-confidence entries (likely original language)
+    all_entries = _dedupe_by_confidence(all_entries)
+    logger.info(f"Subtitle engine: {len(all_entries)} total entries, bilingual")
+    return all_entries
+
+
+def _filter_by_language(entries, expected_lang):
+    """Keep only entries whose text is detected as the expected language.
+    Uses confidence (avg_logprob) to break ties: higher confidence = original language."""
+    from langdetect import detect
+    result = []
+    for e in entries:
+        txt = e["text"]
+        if len(txt) < 4:
+            result.append(e)
+            continue
+        try:
+            detected = detect(txt)
+        except Exception:
+            result.append(e)
+            continue
+        is_english = (detected == "en")
+        wants_english = (expected_lang == "en")
+        if is_english == wants_english:
+            result.append(e)
+    return result
+
+
+def _dedupe_by_confidence(entries):
+    """Remove overlapping entries, keeping the one with higher avg_logprob.
+    When two transcriptions cover the same timestamp, the one with higher
+    confidence is more likely the original language (not a translation)."""
+    if not entries:
+        return entries
+
+    # Sort by start time, then by avg_logprob descending (higher confidence first)
+    entries.sort(key=lambda e: (e["start"], -(e.get("avg_logprob", -99))))
+
+    result = []
+    for e in entries:
+        overlap = False
+        for kept in result:
+            # Check timestamp overlap
+            if e["start"] < kept["end"] and e["end"] > kept["start"]:
+                # e overlaps with a kept entry — skip e (kept has higher confidence)
+                overlap = True
+                break
+        if not overlap:
+            result.append(e)
+
+    return result
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
