@@ -450,6 +450,20 @@ def parse_render_settings(instructions):
         if m:
             settings["summary_duration"] = int(m.group(1)) * 60
 
+    # CTA overlay at end of video (follow call-to-action)
+    cta_kw = ["cta", "sígueme", "sigueme", "follow", "llamada a la acción", "llamada a la accion",
+              "sigue mi perfil", "síguelo", "siguelo", "no te pierdas", "sígueme para más"]
+    if any(kw in low for kw in cta_kw):
+        settings["cta"] = True
+        # Custom CTA text in quotes: "cta 'texto personalizado'"
+        m = re.search(r'(?:cta|sígueme|sigueme|follow)\s*[:"\']\s*([^"\']+)', low, re.IGNORECASE)
+        if m:
+            settings["cta_text"] = m.group(1).strip()
+        elif "seguir" in low and '"' in instructions:
+            m2 = re.search(r'"([^"]+)"', instructions)
+            if m2:
+                settings["cta_text"] = m2.group(1).strip()
+
     m = re.search(r"(\d+)\s*clip", low)
     if m:
         settings["num_clips"] = int(m.group(1))
@@ -689,7 +703,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -714,6 +728,24 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     render_size = (_RENDER_W, _RENDER_H)
     clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                           dynamic_trajectory=trajectory, target_size=render_size)
+
+    # ── CTA overlay: follow call-to-action in the last ~3 seconds ──────
+    if cta:
+        from moviepy import TextClip
+        cta_dur = min(3.0, clip.duration * 0.25)
+        default_cta = "Sígueme para más clips 🔥"
+        cta_msg = cta_text or default_cta
+        font_path = os.path.join(ROOT_DIR, "fonts", "Arial.ttf")
+        if not os.path.exists(font_path):
+            font_path = "C:/Windows/Fonts/arial.ttf"
+        cta_clip = TextClip(
+            text=cta_msg, font=font_path,
+            font_size=max(20, int(30 * _RENDER_W / 540)),
+            color="#FFFFFF", stroke_color="#000000", stroke_width=2,
+            method="caption", size=(int(_RENDER_W * 0.9), 120), text_align="center",
+        ).with_position(("center", int(_RENDER_H * 0.78))).with_duration(cta_dur)
+        cta_clip = cta_clip.with_start(max(0.0, clip.duration - cta_dur))
+        clip = CompositeVideoClip([clip, cta_clip])
 
     if clip.audio is not None:
         clip = clip.with_effects([afx.MultiplyVolume(0.85)])
@@ -870,6 +902,8 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
     overlay_text = render.get("overlay_text", default_overlay_text)
     overlay_color = render.get("overlay_color", "white")
     dynamic = render.get("dynamic", False)
+    cta = render.get("cta", False)
+    cta_text = render.get("cta_text")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -921,7 +955,8 @@ def main_stream(youtube_url, min_clip=20, max_clip=60, num_clips=3, reporter=Non
                           f"{m['end']-m['start']:.0f}s {bg}")
 
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
-                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic)
+                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
+                           cta=cta, cta_text=cta_text)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -941,6 +976,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     bg = render.get("bg", "pixel")
     overlay_text = render.get("overlay_text")
     overlay_color = render.get("overlay_color", "white")
+    cta = render.get("cta", False)
+    cta_text = render.get("cta_text")
 
     video_path, caption_path = download_youtube(youtube_url, mp_dir)
     segments = parse_vtt(caption_path)
@@ -959,7 +996,8 @@ def main(youtube_url, min_clip=20, max_clip=60, num_clips=4, instructions=None):
     outputs = []
     for i, m in enumerate(moments):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
-                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color)
+                           bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
+                           cta=cta, cta_text=cta_text)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 
