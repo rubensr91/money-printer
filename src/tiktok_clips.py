@@ -729,23 +729,33 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     clip = make_panoramic(clip, bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                           dynamic_trajectory=trajectory, target_size=render_size)
 
-    # ── CTA overlay: follow call-to-action in the last ~3 seconds ──────
+    # ── CTA: full-screen blank card AFTER the clip (2s) ────────────────
     if cta:
-        from moviepy import TextClip
-        cta_dur = min(3.0, clip.duration * 0.25)
-        default_cta = "Sígueme para más clips 🔥"
+        from moviepy import TextClip, ColorClip, concatenate_videoclips
+        cta_dur = 2.0
+        default_cta = "Sígueme para más clips"
         cta_msg = cta_text or default_cta
         font_path = os.path.join(ROOT_DIR, "fonts", "Arial.ttf")
         if not os.path.exists(font_path):
             font_path = "C:/Windows/Fonts/arial.ttf"
-        cta_clip = TextClip(
+
+        # Full-screen white card at render size
+        card = ColorClip(
+            size=render_size, color=(255, 255, 255)
+        ).with_duration(cta_dur)
+
+        # Centered text on the card
+        txt = TextClip(
             text=cta_msg, font=font_path,
-            font_size=max(20, int(30 * _RENDER_W / 540)),
-            color="#FFFFFF", stroke_color="#000000", stroke_width=2,
-            method="caption", size=(int(_RENDER_W * 0.9), 120), text_align="center",
-        ).with_position(("center", int(_RENDER_H * 0.78))).with_duration(cta_dur)
-        cta_clip = cta_clip.with_start(max(0.0, clip.duration - cta_dur))
-        clip = CompositeVideoClip([clip, cta_clip])
+            font_size=max(28, int(52 * _RENDER_W / 540)),
+            color="#000000", stroke_color="#000000", stroke_width=0,
+            method="caption", size=(int(_RENDER_W * 0.85), int(_RENDER_H * 0.5)),
+            text_align="center",
+        ).with_position(("center", "center")).with_duration(cta_dur)
+
+        cta_card = CompositeVideoClip([card, txt])
+        # Append AFTER the main clip
+        clip = concatenate_videoclips([clip, cta_card])
 
     if clip.audio is not None:
         clip = clip.with_effects([afx.MultiplyVolume(0.85)])
