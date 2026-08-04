@@ -210,18 +210,17 @@ def _dedup_entries(entries):
 # ── Rendering ────────────────────────────────────────────────────────────────
 
 # Default style configuration
-# UNIFIED design: white text on semi-transparent black box. One look across
-# all clips — no per-language colors, no bg toggle.
+# UNIFIED design: white text on semi-transparent black box. No padding,
+# bottom-anchored (same position for all languages / line counts).
 DEFAULT_STYLE = {
     "bg": True,
     "bg_color": (0, 0, 0),
     "bg_opacity": 0.7,
-    "bg_padding": (20, 10),
+    "bg_padding": (0, 0),
     "default_color": (255, 255, 255),
     "stroke_color": (0, 0, 0),
     "stroke_width": 2,             # subtle edge on light video areas
     "position": 0.82,              # bottom band, above TikTok UI (~84% down)
-    "multi_lang_offset": 0.04,
 }
 
 # Max characters per subtitle line. Calculated for a 6.7" phone screen:
@@ -230,7 +229,7 @@ DEFAULT_STYLE = {
 # ≈ 22px/char → ~22 chars fit comfortably without triggering caption wrap.
 MAX_CHARS_PER_LINE = 22
 
-# Language display order (top to bottom)
+# Language display order (top to bottom) — kept for bilingual stacking if needed
 LANG_ORDER = ["en", "es"]
 
 
@@ -267,13 +266,9 @@ def render_subtitles(
         font_path = _find_font()
         font_size = _font_size(clip.w)
 
-        # Vertical position: offset by language, clamp to prevent overflow
-        lang_idx = LANG_ORDER.index(lang) if lang in LANG_ORDER else 0
-        pos_y = int(clip.h * (cfg["position"] - lang_idx * cfg["multi_lang_offset"]))
-
-        # Unified design: white text on black box. Use label (exact-size box)
-        # normally; if the rendered text is wider than the phone screen,
-        # fall back to caption method so it wraps instead of being cut.
+        # Unified design: white text on black box. Label (exact-fit box)
+        # normally; fall back to caption wrap if the rendered text would
+        # overflow the phone screen.
         max_w = int(clip.w * 0.94)
         txt = TextClip(
             text=text.upper(), font=font_path, font_size=font_size,
@@ -294,7 +289,8 @@ def render_subtitles(
         dur = max(end - start, 0.2)
 
         if cfg["bg"]:
-            w, h = txt.w + cfg["bg_padding"][0], txt.h + cfg["bg_padding"][1]
+            w = txt.w + cfg["bg_padding"][0]
+            h = txt.h + cfg["bg_padding"][1]
             bg = ColorClip(size=(w, h), color=cfg["bg_color"])
             bg = bg.with_opacity(cfg["bg_opacity"])
             frame = CompositeVideoClip([
@@ -304,9 +300,10 @@ def render_subtitles(
         else:
             frame = txt.with_duration(dur)
 
-        # Center vertically at pos_y, clamp to keep fully inside frame
-        top = pos_y - frame.h // 2
-        top = max(0, min(top, clip.h - frame.h))
+        # Bottom-anchored: all subtitles at the same distance from the
+        # bottom — consistent across languages, line counts, and box sizes.
+        bottom_margin = int(clip.h * (1.0 - cfg["position"]))
+        top = max(0, clip.h - frame.h - bottom_margin)
         frame = frame.with_position(("center", top))
         frame = frame.with_start(start)
 
