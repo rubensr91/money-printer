@@ -137,13 +137,14 @@ def download_media(url, output_dir):
             raise RuntimeError(f"Direct download failed: {e}")
 
     # Twitch / Instagram / TikTok via yt-dlp
-    # TikTok serves separate video + audio streams: prefer merge,
-    # fall back to best combined, then any best.
+    # TikTok format: prefer video with audio integrated, fall back to best
+    # TikTok often doesn't provide separate audio streams, so we must use
+    # formats that include audio
     info(f"Downloading ({stype}): {url}")
     template = os.path.join(output_dir, f"{vid}.%(ext)s")
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "-f", "best[height<=1080]/best",  # TikTok: get best format with audio
         "-o", template, "--merge-output-format", "mp4", "--no-playlist",
         url,
     ]
@@ -153,7 +154,35 @@ def download_media(url, output_dir):
         raise RuntimeError(f"Download failed: {result.stderr[:200]}")
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
-    ok(f"Downloaded ({stype}): {vid}.mp4")
+    
+    # Verify the downloaded video has audio
+    from moviepy import VideoFileClip
+    test_clip = VideoFileClip(video_path)
+    has_audio = test_clip.audio is not None
+    test_clip.close()
+    
+    if not has_audio:
+        warn(f"Downloaded video has no audio, trying alternative format...")
+        os.remove(video_path)
+        # Try with explicit format that includes audio
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", "best",  # Force best format (should include audio)
+            "-o", template, "--no-playlist",
+            url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Download with audio failed: {result.stderr[:200]}")
+        
+        # Verify again
+        test_clip = VideoFileClip(video_path)
+        has_audio = test_clip.audio is not None
+        test_clip.close()
+        if not has_audio:
+            raise RuntimeError("Downloaded video still has no audio")
+    
+    ok(f"Downloaded ({stype}): {vid}.mp4 (with audio)")
     return video_path, None
 
 
