@@ -210,17 +210,17 @@ def _dedup_entries(entries):
 # ── Rendering ────────────────────────────────────────────────────────────────
 
 # Default style configuration
-# UNIFIED design: white text on semi-transparent black box. No padding,
-# bottom-anchored (same position for all languages / line counts).
+# UNIFIED design: white text on semi-transparent black box.
+# Fixed box height ensures consistent positioning for 1-line or 2-line text.
 DEFAULT_STYLE = {
     "bg": True,
     "bg_color": (0, 0, 0),
     "bg_opacity": 0.7,
-    "bg_padding": (0, 0),
+    "bg_padding": (15, 5),
     "default_color": (255, 255, 255),
     "stroke_color": (0, 0, 0),
-    "stroke_width": 2,             # subtle edge on light video areas
-    "position": 0.82,              # bottom band, above TikTok UI (~84% down)
+    "stroke_width": 0,             # disabled to avoid edge clipping
+    "position": 0.85,              # 85% from top = 15% from bottom
 }
 
 # Max characters per subtitle line. Calculated for a 6.7" phone screen:
@@ -254,6 +254,10 @@ def render_subtitles(
     if style:
         cfg.update(style)
 
+    # Fixed box height: accommodates up to 2 lines of text consistently
+    # Font size at 540px width = 35px, line height ~40px, 2 lines = 80px
+    fixed_box_height = 90
+
     sub_clips = []
 
     for entry in entries:
@@ -266,44 +270,46 @@ def render_subtitles(
         font_path = _find_font()
         font_size = _font_size(clip.w)
 
-        # Unified design: white text on black box. Label (exact-fit box)
-        # normally; fall back to caption wrap if the rendered text would
-        # overflow the phone screen.
+        # Render text: label mode, no automatic wrapping
+        # MAX_CHARS_PER_LINE=22 ensures text fits within 94% of screen width
         max_w = int(clip.w * 0.94)
         txt = TextClip(
             text=text.upper(), font=font_path, font_size=font_size,
-            color=color, stroke_color=cfg["stroke_color"],
-            stroke_width=cfg["stroke_width"],
+            color=color, stroke_width=cfg["stroke_width"],
             method="label",
         )
+        
+        # Safety check: if text exceeds max width, truncate (shouldn't happen with MAX_CHARS=22)
         if txt.w > max_w:
-            # Safety wrap — caption method splits on spaces, and we zero out
-            # stroke because the black bg box already provides contrast and
-            # stroke can clip at the box edge in caption mode.
+            # Fallback to caption mode with wrap
             txt = TextClip(
                 text=text.upper(), font=font_path, font_size=font_size,
-                color=color, stroke_color=cfg["stroke_color"],
-                stroke_width=0,
+                color=color, stroke_width=0,
                 method="caption", size=(max_w, None), text_align="center",
             )
+
         dur = max(end - start, 0.2)
 
-        if cfg["bg"]:
-            w = txt.w + cfg["bg_padding"][0]
-            h = txt.h + cfg["bg_padding"][1]
-            bg = ColorClip(size=(w, h), color=cfg["bg_color"])
-            bg = bg.with_opacity(cfg["bg_opacity"])
-            frame = CompositeVideoClip([
-                bg.with_position(("center", "center")),
-                txt.with_position(("center", "center")),
-            ]).with_duration(dur)
-        else:
-            frame = txt.with_duration(dur)
+        # Create fixed-height background box
+        box_w = txt.w + cfg["bg_padding"][0]
+        box_h = fixed_box_height
+        bg = ColorClip(size=(box_w, box_h), color=cfg["bg_color"])
+        bg = bg.with_opacity(cfg["bg_opacity"])
 
-        # Bottom-anchored: all subtitles at the same distance from the
-        # bottom — consistent across languages, line counts, and box sizes.
+        # Center text vertically within the fixed-height box
+        # txt is already sized by its content; position it centered in the box
+        txt_y = (box_h - txt.h) // 2
+        txt_clip = txt.with_position(("center", txt_y))
+
+        # Compose background + centered text
+        frame = CompositeVideoClip([
+            bg.with_position(("center", "center")),
+            txt_clip,
+        ]).with_duration(dur)
+
+        # Bottom-anchored positioning: box bottom at consistent position
         bottom_margin = int(clip.h * (1.0 - cfg["position"]))
-        top = max(0, clip.h - frame.h - bottom_margin)
+        top = clip.h - box_h - bottom_margin
         frame = frame.with_position(("center", top))
         frame = frame.with_start(start)
 
