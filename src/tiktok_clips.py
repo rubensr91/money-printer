@@ -137,14 +137,21 @@ def download_media(url, output_dir):
             raise RuntimeError(f"Direct download failed: {e}")
 
     # Twitch / Instagram / TikTok via yt-dlp
-    # Twitch / Instagram / TikTok via yt-dlp
-    # TikTok serves separate video + audio streams: prefer merge,
-    # fall back to best combined, then any best.
+    # TikTok serves combined streams but format IDs with "-1" suffix are
+    # video-only despite showing "aac" in metadata. The "download" format
+    # (watermarked) always includes audio, and "-0" variants have audio.
     info(f"Downloading ({stype}): {url}")
     template = os.path.join(output_dir, f"{vid}.%(ext)s")
+    if stype == "tiktok":
+        # TikTok: "download" format always has audio; fall back to any
+        # format with audio codec (aac/mp3/opus)
+        fmt = "download/best[acodec!=none]/best"
+    else:
+        # Twitch / Instagram: prefer merged streams, fall back to combined
+        fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "-f", fmt,
         "-o", template, "--merge-output-format", "mp4", "--no-playlist",
         url,
     ]
