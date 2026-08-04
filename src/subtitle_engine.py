@@ -210,16 +210,14 @@ def _dedup_entries(entries):
 # ── Rendering ────────────────────────────────────────────────────────────────
 
 # Default style configuration
-# UNIFIED design: white text on semi-transparent black box.
-# Fixed box height ensures consistent positioning for 1-line or 2-line text.
+# White text on tight-fit black box, bottom-anchored.
 DEFAULT_STYLE = {
     "bg": True,
     "bg_color": (0, 0, 0),
     "bg_opacity": 0.7,
-    "bg_padding": (15, 5),
+    "bg_padding": (12, 4),
     "default_color": (255, 255, 255),
-    "stroke_color": (0, 0, 0),
-    "stroke_width": 0,             # disabled to avoid edge clipping
+    "stroke_width": 0,
     "position": 0.85,              # 85% from top = 15% from bottom
 }
 
@@ -240,6 +238,9 @@ def render_subtitles(
 ) -> "CompositeVideoClip":
     """Burn subtitles onto a MoviePy clip.
 
+    Every subtitle is a white text on a tight-fit black box, bottom-anchored
+    at a consistent distance from the bottom of the screen.
+
     Args:
         clip: MoviePy VideoFileClip or CompositeVideoClip
         entries: List from transcribe_segment()
@@ -254,34 +255,27 @@ def render_subtitles(
     if style:
         cfg.update(style)
 
-    # Fixed box height: accommodates up to 2 lines of text consistently
-    # Font size at 540px width = 35px, line height ~40px, 2 lines = 80px
-    fixed_box_height = 90
-
     sub_clips = []
+    bottom_margin = int(clip.h * (1.0 - cfg["position"]))
 
     for entry in entries:
         start = entry["start"]
         end = entry["end"]
         text = entry["text"]
-        lang = entry.get("language", "en")
         color = cfg["default_color"]
 
         font_path = _find_font()
         font_size = _font_size(clip.w)
-
-        # Render text: label mode, no automatic wrapping
-        # MAX_CHARS_PER_LINE=22 ensures text fits within 94% of screen width
         max_w = int(clip.w * 0.94)
+
+        # Create the text
         txt = TextClip(
             text=text.upper(), font=font_path, font_size=font_size,
             color=color, stroke_width=cfg["stroke_width"],
             method="label",
         )
-        
-        # Safety check: if text exceeds max width, truncate (shouldn't happen with MAX_CHARS=22)
+        # Safety: wrap if text exceeds screen width (shouldn't with MAX_CHARS=22)
         if txt.w > max_w:
-            # Fallback to caption mode with wrap
             txt = TextClip(
                 text=text.upper(), font=font_path, font_size=font_size,
                 color=color, stroke_width=0,
@@ -290,26 +284,22 @@ def render_subtitles(
 
         dur = max(end - start, 0.2)
 
-        # Create fixed-height background box
-        box_w = txt.w + cfg["bg_padding"][0]
-        box_h = fixed_box_height
-        bg = ColorClip(size=(box_w, box_h), color=cfg["bg_color"])
+        # Tight-fit background box = text size + small padding
+        bw = txt.w + cfg["bg_padding"][0]
+        bh = txt.h + cfg["bg_padding"][1]
+        bg = ColorClip(size=(bw, bh), color=cfg["bg_color"])
         bg = bg.with_opacity(cfg["bg_opacity"])
 
-        # Center text vertically within the fixed-height box
-        # txt is already sized by its content; position it centered in the box
-        txt_y = (box_h - txt.h) // 2
-        txt_clip = txt.with_position(("center", txt_y))
-
-        # Compose background + centered text
+        # Compose: bg BEHIND text, both at (0,0) within the frame
+        # (text is composited ON TOP of background, not underneath)
         frame = CompositeVideoClip([
-            bg.with_position(("center", "center")),
-            txt_clip,
+            bg.with_position((0, 0)),
+            txt.with_position((cfg["bg_padding"][0] // 2, cfg["bg_padding"][1] // 2)),
         ]).with_duration(dur)
 
-        # Bottom-anchored positioning: box bottom at consistent position
-        bottom_margin = int(clip.h * (1.0 - cfg["position"]))
-        top = clip.h - box_h - bottom_margin
+        # Bottom-anchored: same distance from bottom for every subtitle
+        top = clip.h - bh - bottom_margin
+        top = max(0, top)
         frame = frame.with_position(("center", top))
         frame = frame.with_start(start)
 
