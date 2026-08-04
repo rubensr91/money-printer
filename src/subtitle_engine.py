@@ -226,8 +226,9 @@ DEFAULT_STYLE = {
 
 # Max characters per subtitle line. Calculated for a 6.7" phone screen:
 # render at 540px wide (half-res, later upscaled ×2 to 1080), useful width
-# ~94% = ~507px, Arial Bold 35px ≈ 20px/char → ~24 chars fit comfortably.
-MAX_CHARS_PER_LINE = 24
+# ~94% = ~507px. text.upper() is always applied, and uppercase Arial Bold 35px
+# ≈ 22px/char → ~22 chars fit comfortably without triggering caption wrap.
+MAX_CHARS_PER_LINE = 22
 
 # Language display order (top to bottom)
 LANG_ORDER = ["en", "es"]
@@ -281,10 +282,13 @@ def render_subtitles(
             method="label",
         )
         if txt.w > max_w:
+            # Safety wrap — caption method splits on spaces, and we zero out
+            # stroke because the black bg box already provides contrast and
+            # stroke can clip at the box edge in caption mode.
             txt = TextClip(
                 text=text.upper(), font=font_path, font_size=font_size,
                 color=color, stroke_color=cfg["stroke_color"],
-                stroke_width=cfg["stroke_width"],
+                stroke_width=0,
                 method="caption", size=(max_w, None), text_align="center",
             )
         dur = max(end - start, 0.2)

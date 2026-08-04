@@ -36,7 +36,7 @@ def _split_segment_naturally(text, start, end):
     6.7\" phone screen without being cut."""
     words = text.split()
     n = len(words)
-    max_chars = 24
+    max_chars = 22
     if n <= 8 and len(text) <= max_chars:
         return [(start, end, text)]
     target = max(4, min(8, n // max(1, int((end - start) * 1.5))))

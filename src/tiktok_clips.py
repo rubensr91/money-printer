@@ -136,12 +136,14 @@ def download_media(url, output_dir):
             err(f"Direct download failed: {e}")
             raise RuntimeError(f"Direct download failed: {e}")
 
-    # Twitch / Instagram via yt-dlp
+    # Twitch / Instagram / TikTok via yt-dlp
+    # TikTok serves separate video + audio streams: prefer merge,
+    # fall back to best combined, then any best.
     info(f"Downloading ({stype}): {url}")
     template = os.path.join(output_dir, f"{vid}.%(ext)s")
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        "-f", "best[height<=1080]",
+        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
         "-o", template, "--merge-output-format", "mp4", "--no-playlist",
         url,
     ]
@@ -691,9 +693,14 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", d
         base = clip.resized((max(80, W // 8), max(144, H // 8))).resized(size)
 
     if dynamic_trajectory and bg != "none" and _face_tracker_available():
-        return make_dynamic_panoramic(clip, dynamic_trajectory,
-                                      overlay_text=overlay_text, overlay_color=overlay_color,
-                                      target_size=target_size)
+        result = make_dynamic_panoramic(clip, dynamic_trajectory,
+                                        overlay_text=overlay_text, overlay_color=overlay_color,
+                                        target_size=target_size)
+        # Preserve audio through the dynamic composite (CompositeVideoClip
+        # drops audio when no audio layer is explicitly added)
+        if clip.audio is not None:
+            result = result.with_audio(clip.audio)
+        return result
 
     fg = clip.resized(width=W).with_position("center")
 
@@ -721,7 +728,11 @@ def make_panoramic(clip, bg="pixel", overlay_text=None, overlay_color="white", d
             .with_position(("center", int(1500 * H / _FINAL_H)))
         )
         layers.append(txt)
-    return CompositeVideoClip(layers, size=size)
+    # CompositeVideoClip drops audio — reattach from the foreground clip
+    result = CompositeVideoClip(layers, size=size)
+    if fg.audio is not None:
+        result = result.with_audio(fg.audio)
+    return result
 
 
 def _detect_encoder():

@@ -141,9 +141,9 @@ def transcribe_audio(audio_path: str, output_srt: str, language: str = "es") -> 
 
         words = text.split()
         seg_words = [w for w in (segment.words or []) if (w.word or "").strip()]
-        # Max chars per line: ~24 fits a 6.7" phone screen (render 540px wide,
-        # ~94% useful width, Arial Bold 35px ≈ 20px/char).
-        max_chars = 24
+        # Max chars per line: ~22 fits a 6.7" phone screen (render 540px wide,
+        # ~94% useful width, uppercase Arial Bold 35px ≈ 22px/char).
+        max_chars = 22
         if len(words) <= 4 and len(text) <= max_chars:
             # Trim to real speech (kills trailing silence Whisper appends)
             if seg_words:
