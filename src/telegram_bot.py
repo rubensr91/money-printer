@@ -606,6 +606,28 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Configuración <b>restablecida</b> a defaults.", parse_mode="HTML")
 
 
+async def cmd_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive code modification instruction: /code <texto>
+    Saves to .mp/pending_instruction.txt for OpenCode to process."""
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: /code &lt;instrucción&gt;\n\n"
+            "Ej: /code reduce el font size de los subtítulos a 60\n"
+            "La instrucción se guarda y Sisyphus la procesa, "
+            "reinicia el bot y te avisa.",
+            parse_mode="HTML")
+        return
+    instruction = " ".join(context.args)
+    from config import ROOT_DIR
+    path = os.path.join(ROOT_DIR, ".mp", "pending_instruction.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(instruction)
+    await update.message.reply_text(
+        f"📝 <b>Instrucción registrada:</b>\n\n<code>{instruction[:300]}</code>\n\n"
+        "Sisyphus la procesará en breve, reiniciará el bot y te avisará.",
+        parse_mode="HTML")
+
+
 # ── Message handler ──────────────────────────────────────────────────────
 
 async def _handle_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, chat_id: int):
@@ -837,6 +859,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("auto", cmd_auto))
     app.add_handler(CommandHandler("abtest", cmd_abtest))
+    app.add_handler(CommandHandler("code", cmd_code))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CallbackQueryHandler(on_callback))
