@@ -51,7 +51,6 @@
 | Panoramic (TikTok) | 9:16, 1080×1920 | Vertical clips with pixel/colored bg | `tiktok_clips.process_clip()` with `bg="pixel"` |
 | Dynamic face-track | 9:16, 1080×1920 | Follows speaker's face | `process_clip(dynamic=True)` + `face_tracker.py` |
 | Horizontal (no bg) | 16:9, 1920×1080 | Raw horizontal cuts, summaries | ffmpeg `-c copy` concat (no moviepy) |
-| With subtitles | any | Burned-in captions | `test_subtitles_clip.py` pattern: Whisper GPU → SRT → `SubtitlesClip` + `CompositeVideoClip` |
 
 ### Summary generation (horizontal, IA-selected moments)
 **Script**: `scripts/summarize_video.py <youtube_url> [--duration 300] [--send]`
@@ -69,15 +68,7 @@ Pipeline:
 **Script**: `scripts/send_telegram.py <video.mp4> [caption]`
 
 Config: `.mp/telegram.json` → `{bot_token, chat_id}`. Limit: **50MB** (Bot API).  
-Use this for manual renders, summaries, subtitle jobs — no need to enqueue in `jobs.db`.
-
-### Adding subtitles to existing clips
-Pattern (see `test_subtitles_clip.py`):
-1. Extract audio: `ffmpeg -vn -acodec pcm_s16le -ar 16000 -ac 1 audio.wav`
-2. Transcribe: `transcribe_audio()` from `tiktok_video.py` (faster-whisper, GPU)
-3. SRT → `SubtitlesClip(generator)` with Arial font, position bottom-140
-4. `CompositeVideoClip([video, subtitles])`, render NVENC
-5. Send: `scripts/send_telegram.py`
+Use this for manual renders, summaries — no need to enqueue in `jobs.db`.
 
 ---
 
@@ -128,8 +119,7 @@ This is committed in `telegram_bot.py` (commit `fd68855`).
 - Per-chat settings: `bot_config.py` → `.mp/bot_config.json`  
   Defaults: `num_clips=3, min_clip=5, max_clip=0 (sin límite), bg="pixel"`  
   El troceado lo decide el usuario vía instrucciones ("haz 2 clips de 3 minutos") o `/duracion min [max]` (max=0 = sin límite).
-- Telegram token + chat_id: `.mp/telegram.json`  
-- GPU/Whisper: `config.py` → `get_whisper_model()` (medium), `get_whisper_device()` (cuda)
+- Telegram token + chat_id: `.mp/telegram.json`
 
 ---
 

@@ -543,37 +543,6 @@ def parse_render_settings(instructions):
     if "dinamico" in low or "dynamic" in low:
         settings["dynamic"] = True
 
-    # Subtitles: burned-in captions via subtitle_engine (Whisper GPU)
-    # Keywords: subtitulos, subtitles, subs
-    sub_kw = ["subtitulos", "subtítulos", "subtitulos", "subtitular",
-              "subtitles", "subs", "con subtitulo", "con subtítulos"]
-    if any(kw in low for kw in sub_kw):
-        settings["subtitles"] = True
-        # Level: word vs phrase (default: phrase)
-        if any(kw in low for kw in ["palabra", "word", "karaoke", "por palabra"]):
-            settings["subtitles_level"] = "word"
-        else:
-            settings["subtitles_level"] = "phrase"
-        # NOTE: subtitle design is fixed (white text, black box). Only the
-        # position and language are user-configurable.
-        # Language filter
-        if "idioma es" in low or "solo espanol" in low or "solo español" in low or "en espanol" in low or "en español" in low:
-            settings["subtitles_lang"] = ["es"]
-        elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low or "en ingles" in low or "en inglés" in low:
-            settings["subtitles_lang"] = ["en"]
-        elif any(kw in low for kw in ["ambos idiomas", "bilingue", "bilingüe", "dos idiomas", "es y en", "en y es"]):
-            settings["subtitles_lang"] = ["es", "en"]  # explicit bilingual
-        else:
-            settings["subtitles_lang"] = None  # default: auto-detect (single pass)
-
-        # Subtitle position
-        if "abajo" in low or "inferior" in low:
-            settings["subtitles_position"] = 0.75
-        elif "arriba" in low or "superior" in low:
-            settings["subtitles_position"] = 0.35
-        elif "en medio" in low or "centro" in low or "centrado" in low:
-            settings["subtitles_position"] = 0.50
-
     # Overlay text burned in clip — only when it's NOT a CTA (CTA has its own text)
     if not settings.get("cta") or not settings.get("cta_text"):
         m = re.search(r'texto\s*["\u201c]\s*([^"\u201d]+)', instructions)
@@ -806,7 +775,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_level="phrase", subtitles_lang=None, subtitles_position=None):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white"):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -833,30 +802,6 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
                           dynamic_trajectory=trajectory, target_size=render_size)
 
     # ── Subtitles: Whisper GPU transcription + burned-in captions ──────
-    if subtitles:
-        from subtitle_engine import transcribe_segment, render_subtitles, extract_audio_segment
-        tmp_wav = extract_audio_segment(video_path, clip_start, clip_end, output_dir)
-        try:
-            word_level = (subtitles_level == "word")
-            lang = subtitles_lang
-            ok(f"  Transcribing clip audio ({'/'.join(lang) if lang else 'auto'}, {'word' if word_level else 'phrase'})...")
-            entries = transcribe_segment(tmp_wav, word_level=word_level, languages=lang)
-            if entries:
-                # Unified subtitle style (white text, black box) lives in
-                # subtitle_engine.DEFAULT_STYLE — only position is configurable.
-                style = {}
-                if subtitles_position is not None:
-                    style["position"] = subtitles_position
-                clip = render_subtitles(clip, entries, style)
-                ok(f"  Subtitles burned: {len(entries)} entries")
-            else:
-                warn("  No subtitle entries produced")
-        except Exception as e:
-            warn(f"  Subtitles failed ({str(e)[:120]}), continuing without")
-        finally:
-            if os.path.exists(tmp_wav):
-                os.remove(tmp_wav)
-
     # ── CTA: full-screen blank card AFTER the clip (2s) ────────────────
     if cta:
         from moviepy import TextClip, ColorClip, concatenate_videoclips
@@ -1055,10 +1000,6 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
-    subtitles = render.get("subtitles", False)
-    subtitles_level = render.get("subtitles_level", "phrase")
-    subtitles_lang = render.get("subtitles_lang", ["es", "en"])
-    subtitles_position = render.get("subtitles_position")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -1111,10 +1052,7 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
 
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg,
-                           subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_lang=subtitles_lang,
-                           subtitles_position=subtitles_position)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -1137,10 +1075,6 @@ def main(youtube_url, min_clip=5, max_clip=0, num_clips=4, instructions=None):
     cta = render.get("cta", False)
     cta_text = render.get("cta_text")
     cta_bg = render.get("cta_bg", "white")
-    subtitles = render.get("subtitles", False)
-    subtitles_level = render.get("subtitles_level", "phrase")
-    subtitles_lang = render.get("subtitles_lang", ["es", "en"])
-    subtitles_position = render.get("subtitles_position")
 
     video_path, caption_path = download_youtube(youtube_url, mp_dir)
     segments = parse_vtt(caption_path)
@@ -1160,10 +1094,7 @@ def main(youtube_url, min_clip=5, max_clip=0, num_clips=4, instructions=None):
     for i, m in enumerate(moments):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
-                           cta=cta, cta_text=cta_text, cta_bg=cta_bg,
-                           subtitles=subtitles, subtitles_level=subtitles_level,
-                           subtitles_lang=subtitles_lang,
-                           subtitles_position=subtitles_position)
+                           cta=cta, cta_text=cta_text, cta_bg=cta_bg)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 
