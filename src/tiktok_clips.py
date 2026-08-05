@@ -884,21 +884,28 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     info(f"Using encoder: {encoder}")
 
     if subtitle_ass:
-        # Two-pass: MoviePy compositing to temp, ffmpeg subtitles + upscale
+        # Two-pass: MoviePy compositing to temp (540p), ffmpeg subtitles + upscale
         temp_path = os.path.join(output_dir, f"_tmp_{clip_idx}.mp4")
         try:
-            clip.write_videofile(temp_path, codec="libx264", audio_codec="aac",
-                                 preset="ultrafast", fps=30, threads=get_threads(),
-                                 ffmpeg_params=["-crf", "18"])
+            # Temp render at 540p with the same encoder for speed
+            if encoder == "h264_nvenc":
+                clip.write_videofile(temp_path, codec="h264_nvenc", audio_codec="aac",
+                                     ffmpeg_params=["-preset", "p4"], fps=30)
+            else:
+                clip.write_videofile(temp_path, codec="libx264", audio_codec="aac",
+                                     preset="ultrafast", fps=30, threads=get_threads(),
+                                     ffmpeg_params=["-crf", "18"])
             clip.close()
             from subtitle_engine import burn_subtitles
             burn_subtitles(temp_path, subtitle_ass, output_path, encoder=encoder)
-            os.remove(temp_path)
-            os.remove(subtitle_ass)
+            ok(f"  Subtitles burned via ffmpeg ASS")
         except Exception as e:
+            raise e
+        finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            raise e
+            if os.path.exists(subtitle_ass):
+                os.remove(subtitle_ass)
     else:
         # Standard path: MoviePy compositing + NVENC upscale in one pass
         upscale = ["-vf", f"scale={_FINAL_W}:{_FINAL_H}"]
