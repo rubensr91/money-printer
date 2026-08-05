@@ -143,9 +143,9 @@ def download_media(url, output_dir):
     info(f"Downloading ({stype}): {url}")
     template = os.path.join(output_dir, f"{vid}.%(ext)s")
     if stype == "tiktok":
-        # TikTok: "download" format always has audio; fall back to any
-        # format with audio codec (aac/mp3/opus)
-        fmt = "download/best[acodec!=none]/best"
+        # TikTok: h264 codec always has audio + no watermark.
+        # The "download" format is watermarked. bytevc1 (h265) can be audio-less.
+        fmt = "best[vcodec=h264]/best"
     else:
         # Twitch / Instagram: prefer merged streams, fall back to combined
         fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
@@ -205,15 +205,25 @@ def download_youtube(url, output_dir):
     template = os.path.join(output_dir, f"{vid}.%(ext)s")
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
+        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
         "-o", template, "--merge-output-format", "mp4", "--no-playlist",
         "--write-auto-subs", "--sub-lang", "es",
         url,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        err(f"yt-dlp failed: {result.stderr}")
-        raise RuntimeError(result.stderr)
+        # Auto-subs may fail (PO token). Retry without subs.
+        warn(f"Download with subs failed, retrying without auto-subs...")
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "-o", template, "--merge-output-format", "mp4", "--no-playlist",
+            url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            err(f"yt-dlp failed: {result.stderr[:500]}")
+            raise RuntimeError(result.stderr[:300])
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
     # Find captions file
