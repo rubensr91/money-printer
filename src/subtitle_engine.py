@@ -136,6 +136,13 @@ def burn_subtitles(
         fps: output frame rate
     """
     import ffmpeg
+    import logging
+    log = logging.getLogger(__name__)
+
+    # Normalize paths for ffmpeg on Windows (forward slashes, escape properly)
+    video_path = video_path.replace("\\", "/")
+    ass_path = ass_path.replace("\\", "/")
+    output_path = output_path.replace("\\", "/")
 
     in_file = ffmpeg.input(video_path)
     scaled = ffmpeg.filter(in_file, "scale", 1080, 1920)
@@ -145,8 +152,13 @@ def burn_subtitles(
     if encoder == "h264_nvenc":
         args["preset"] = "p4"
 
-    stream = ffmpeg.output(subbed, output_path, **args)
-    ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+    try:
+        stream = ffmpeg.output(subbed, output_path, **args)
+        stdout, stderr = ffmpeg.run(stream, overwrite_output=True,
+                                     capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error as e:
+        log.error(f"ffmpeg subtitle burn failed:\n{e.stderr.decode() if e.stderr else 'no stderr'}")
+        raise RuntimeError(f"Subtitle burn failed: {e.stderr.decode()[:300] if e.stderr else 'unknown'}") from e
 
     logger.info(f"Burned subtitles: {output_path}")
     return output_path
