@@ -63,6 +63,40 @@ def transcribe(audio_path: str, languages: list[str] | None = None) -> list[dict
     return entries
 
 
+# ── Profanity filter ─────────────────────────────────────────────────────
+
+_CENSOR = {
+    "joder", "jodido", "jodida", "jodidos", "jodidas",
+    "puta", "puto", "putas", "putos",
+    "mierda", "mierdas",
+    "coño", "coño", "coños",
+    "hostia", "hostias",
+    "gilipollas", "gilipoya",
+    "cabrón", "cabrona", "cabrones", "cabronas",
+    "pendejo", "pendejos", "pendeja", "pendejas",
+    "culo", "culito", "culos", "culata",
+    "polla", "poyas", "polla", "poyas",
+    "verga", "vergas",
+    "chinga", "chingar", "chingado", "chingada",
+    "pinche", "pinches",
+    "malparido", "malparida", "malparidos", "malparidas",
+    "marica", "maricón", "maricon", "maricas", "maricones",
+    "zorra", "zorro", "zorras", "zorros",
+    "bastardo", "bastarda", "bastardos", "bastardas",
+}
+
+def _censor_word(w: str) -> str:
+    """Replace a profanity word with asterisks, keeping first letter."""
+    low = w.lower().strip(",.!?¿¡;:")
+    if low in _CENSOR:
+        return w[0] + "*" * (len(w) - 1) if len(w) > 1 else "*"
+    return w
+
+def _censor_text(text: str) -> str:
+    """Censor profanity in a subtitle line."""
+    return " ".join(_censor_word(w) for w in text.split())
+
+
 # ── ASS subtitle format ────────────────────────────────────────────────────
 
 def _fmt_ass_time(seconds: float) -> str:
@@ -130,7 +164,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for entry in entries:
         start = _fmt_ass_time(entry["start"])
         end = _fmt_ass_time(entry["end"])
-        text = entry["text"].strip().upper()
+        text = _censor_text(entry["text"].strip().upper())
         if cfg["word_level"]:
             # Each word gets its own entry
             words = text.split()
