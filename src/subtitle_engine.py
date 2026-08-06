@@ -101,6 +101,7 @@ def entries_to_ass(
         "bg": True,
         "bg_color": None,
         "font_color": None,
+        "outline": 0,  # text border/stroke width (0 = none)
     }
     if style:
         cfg.update(style)
@@ -111,6 +112,7 @@ def entries_to_ass(
     # ASS format: &HAABBGGRR (alpha-blue-green-red in hex)
     tc = f"&H00{text_color[2]:02X}{text_color[1]:02X}{text_color[0]:02X}"
     bc = f"&H80{bg_color[2]:02X}{bg_color[1]:02X}{bg_color[0]:02X}"
+    outline = cfg.get("outline", 0)
 
     ass = f"""[Script Info]
 ScriptType: v4.00+
@@ -120,7 +122,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},{tc},&H00000000,{bc},-1,0,3,0,0,2,30,30,{margin_bottom},1
+Style: Default,Arial,{font_size},{tc},&H00000000,{bc},-1,0,3,{outline},0,2,30,30,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

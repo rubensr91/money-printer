@@ -572,6 +572,9 @@ def parse_render_settings(instructions):
                 break
         if sub_style:
             settings["subtitles_style"] = sub_style
+        # Border/stroke on text
+        if any(kw in low for kw in ["borde", "contorno", "con borde", "con contorno", "stroke"]):
+            sub_style["outline"] = 3  # default outline width
         # Language filter
         if "idioma es" in low or "solo espanol" in low or "solo español" in low:
             settings["subtitles_lang"] = ["es"]
