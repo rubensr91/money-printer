@@ -139,14 +139,14 @@ def burn_subtitles(
     import logging
     log = logging.getLogger(__name__)
 
-    # Normalize paths for ffmpeg on Windows (forward slashes, escape properly)
-    video_path = video_path.replace("\\", "/")
-    ass_path = ass_path.replace("\\", "/")
-    output_path = output_path.replace("\\", "/")
+    # On Windows, ffmpeg chokes on drive-letter paths in filter args
+    # (C:\... gets double-escaped). Use relative paths instead.
+    video_path_rel = os.path.relpath(video_path)
+    ass_path_rel = os.path.relpath(ass_path)
 
-    in_file = ffmpeg.input(video_path)
+    in_file = ffmpeg.input(video_path_rel)
     scaled = ffmpeg.filter(in_file, "scale", 1080, 1920)
-    subbed = ffmpeg.filter(scaled, "subtitles", ass_path)
+    subbed = ffmpeg.filter(scaled, "subtitles", ass_path_rel)
 
     args = {"vcodec": encoder, "acodec": "aac", "r": fps}
     if encoder == "h264_nvenc":
