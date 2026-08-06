@@ -548,6 +548,31 @@ def parse_render_settings(instructions):
               "subtitles", "subs", "con subtitulo", "con subtítulos"]
     if any(kw in low for kw in sub_kw):
         settings["subtitles"] = True
+        # Style customization
+        sub_style = {}
+        # Level: word by word vs phrase
+        if any(kw in low for kw in ["palabra", "word", "karaoke", "por palabra", "palabra a palabra"]):
+            sub_style["word_level"] = True
+        # Background toggle
+        if any(kw in low for kw in ["sin fondo", "sin caja", "sin recuadro", "sin bg"]):
+            sub_style["bg"] = False
+        elif any(kw in low for kw in ["con fondo", "con caja", "con recuadro", "con bg"]):
+            sub_style["bg"] = True
+        # Background color
+        for col in ["negro", "black", "blanco", "white", "rojo", "red", "azul", "blue",
+                     "verde", "green", "amarillo", "yellow", "gris", "gray"]:
+            if f"fondo {col}" in low or f"caja {col}" in low or f"bg {col}" in low:
+                sub_style["bg_color"] = col
+                break
+        # Font color
+        for col in ["blanco", "white", "negro", "black", "amarillo", "yellow",
+                     "rojo", "red", "azul", "blue", "verde", "green"]:
+            if f"letra {col}" in low or f"texto {col}" in low:
+                sub_style["font_color"] = col
+                break
+        if sub_style:
+            settings["subtitles_style"] = sub_style
+        # Language filter
         if "idioma es" in low or "solo espanol" in low or "solo español" in low:
             settings["subtitles_lang"] = ["es"]
         elif "idioma en" in low or "solo ingles" in low or "solo inglés" in low:
@@ -789,7 +814,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_lang=None):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_lang=None, subtitles_style=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -825,7 +850,8 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
             entries = transcribe(tmp_wav, languages=subtitles_lang)
             if entries:
                 subtitle_ass = os.path.join(output_dir, f"_subs_{clip_idx}.ass")
-                ass_text = entries_to_ass(entries, video_w=_FINAL_W, video_h=_FINAL_H)
+                ass_text = entries_to_ass(entries, video_w=_FINAL_W, video_h=_FINAL_H,
+                                           style=subtitles_style)
                 with open(subtitle_ass, "w", encoding="utf-8") as f:
                     f.write(ass_text)
                 ok(f"  Subtitles prepared: {len(entries)} entries -> {subtitle_ass}")
@@ -1060,6 +1086,7 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
     cta_bg = render.get("cta_bg", "white")
     subtitles = render.get("subtitles", False)
     subtitles_lang = render.get("subtitles_lang")
+    subtitles_style = render.get("subtitles_style")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -1113,7 +1140,8 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
-                           subtitles=subtitles, subtitles_lang=subtitles_lang)
+                           subtitles=subtitles, subtitles_lang=subtitles_lang,
+                           subtitles_style=subtitles_style)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}
@@ -1158,7 +1186,8 @@ def main(youtube_url, min_clip=5, max_clip=0, num_clips=4, instructions=None):
         out = process_clip(video_path, m["start"], m["end"], i + 1, mp_dir,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
-                           subtitles=subtitles, subtitles_lang=subtitles_lang)
+                           subtitles=subtitles, subtitles_lang=subtitles_lang,
+                           subtitles_style=subtitles_style)
         outputs.append({"path": out, "duration": m["end"] - m["start"],
                         "description": description, "tags": tags})
 

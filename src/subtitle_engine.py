@@ -80,18 +80,38 @@ def entries_to_ass(
     video_h: int = 1920,
     font_size: int = 70,
     margin_bottom: int = 140,
+    style: dict | None = None,
 ) -> str:
     """Convert subtitle entries to ASS format with TikTok styling.
 
-    ASS BorderStyle=3 gives an opaque background box behind the text
-    (semi-transparent black), which is impossible with plain SRT.
-
     Args:
         entries: list of {start, end, text} from transcribe()
-        video_w, video_h: output video dimensions (1080x1920 for TikTok)
-        font_size: font size in points at PlayRes resolution
-        margin_bottom: distance from bottom edge (in PlayRes pixels)
+        video_w, video_h: output video dimensions
+        font_size: font size in points
+        margin_bottom: distance from bottom edge
+        style: optional overrides: {
+            word_level: bool  — word-by-word karaoke
+            bg: bool          — show background box (default True)
+            bg_color: str     — color name for background
+            font_color: str   — color name for text
+        }
     """
+    cfg = {
+        "word_level": False,
+        "bg": True,
+        "bg_color": None,
+        "font_color": None,
+    }
+    if style:
+        cfg.update(style)
+
+    # Resolve colors
+    text_color = _resolve_color(cfg["font_color"]) or (255, 255, 255)
+    bg_color = _resolve_color(cfg["bg_color"]) or (0, 0, 0)
+    # ASS format: &HAABBGGRR (alpha-blue-green-red in hex)
+    tc = f"&H00{text_color[2]:02X}{text_color[1]:02X}{text_color[0]:02X}"
+    bc = f"&H80{bg_color[2]:02X}{bg_color[1]:02X}{bg_color[0]:02X}"
+
     ass = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {video_w}
@@ -100,7 +120,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},&H00FFFFFF,&H00000000,&H80000000,-1,0,3,0,0,2,30,30,{margin_bottom},1
+Style: Default,Arial,{font_size},{tc},&H00000000,{bc},-1,0,3,0,0,2,30,30,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -109,9 +129,36 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start = _fmt_ass_time(entry["start"])
         end = _fmt_ass_time(entry["end"])
         text = entry["text"].strip().upper()
-        ass += f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n"
+        if cfg["word_level"]:
+            # Each word gets its own entry
+            words = text.split()
+            if not words:
+                continue
+            wdur = (entry["end"] - entry["start"]) / len(words)
+            for i, word in enumerate(words):
+                ws = _fmt_ass_time(entry["start"] + i * wdur)
+                we = _fmt_ass_time(entry["start"] + (i + 1) * wdur)
+                ass += f"Dialogue: 0,{ws},{we},Default,,0,0,0,,{word}\n"
+        else:
+            ass += f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n"
 
     return ass
+
+
+def _resolve_color(name: str | None) -> tuple | None:
+    """Convert color name to RGB. Returns None if unknown."""
+    if not name:
+        return None
+    named = {
+        "white": (255, 255, 255), "blanco": (255, 255, 255),
+        "black": (0, 0, 0), "negro": (0, 0, 0),
+        "red": (255, 0, 0), "rojo": (255, 0, 0),
+        "green": (0, 255, 0), "verde": (0, 255, 0),
+        "blue": (0, 0, 255), "azul": (0, 0, 255),
+        "yellow": (255, 255, 0), "amarillo": (255, 255, 0),
+        "gray": (128, 128, 128), "gris": (128, 128, 128),
+    }
+    return named.get(name.lower())
 
 
 # ── ffmpeg subtitle burn ───────────────────────────────────────────────────
