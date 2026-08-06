@@ -608,24 +608,121 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive code modification instruction: /code <texto>
-    Saves to .mp/pending_instruction.txt for OpenCode to process."""
+    Calls DeepSeek to modify the code, commits, restarts, and notifies."""
     if not context.args:
         await update.message.reply_text(
             "Uso: /code &lt;instrucción&gt;\n\n"
-            "Ej: /code reduce el font size de los subtítulos a 60\n"
-            "La instrucción se guarda y Sisyphus la procesa, "
+            "DeepSeek procesa la instrucción, modifica el código, "
             "reinicia el bot y te avisa.",
             parse_mode="HTML")
         return
+
     instruction = " ".join(context.args)
+    chat_id = update.effective_chat.id
+    msg = await update.message.reply_text("🤖 Procesando instrucción con DeepSeek...")
+
+    # Run in background thread to not block the bot
+    import threading
+    t = threading.Thread(target=_process_code_instruction,
+                         args=(chat_id, instruction, msg.message_id),
+                         daemon=True)
+    t.start()
+
+
+def _process_code_instruction(chat_id: int, instruction: str, reply_msg_id: int):
+    """Background: call DeepSeek, apply changes, restart, notify."""
+    import json, subprocess, asyncio, logging
+    log = logging.getLogger(__name__)
+
+    try:
+        from config import ROOT_DIR
+
+        # Read key source files as context
+        src_dir = os.path.join(ROOT_DIR, "src")
+        context = ""
+        for fname in ["subtitle_engine.py", "tiktok_clips.py", "tiktok_video.py",
+                       "telegram_bot.py", "bot_config.py"]:
+            fpath = os.path.join(src_dir, fname)
+            if os.path.exists(fpath):
+                with open(fpath, encoding="utf-8") as f:
+                    context += f"\n=== {fname} ===\n{f.read()[:2000]}\n"
+
+        from llm_provider import generate_text
+
+        prompt = f"""Eres un ingeniero Python. Modifica el código según la instrucción del usuario.
+
+INSTRUCCIÓN: {instruction}
+
+CÓDIGO ACTUAL (parcial):
+{context[:8000]}
+
+Responde ÚNICAMENTE con un JSON válido con este formato exacto:
+{{"files": [{{"path": "src/archivo.py", "edits": [{{"old": "texto a reemplazar", "new": "texto nuevo"}}]}}]}}
+
+Usa el texto EXACTO del código actual para los campos \"old\" (incluye indentación y saltos de línea).
+Si no necesitas modificar nada, devuelve {{"files": []}}.
+NO incluyas explicaciones, solo el JSON."""
+
+        response = generate_text(prompt)
+        log.info(f"DeepSeek response: {response[:500]}")
+
+        # Parse JSON
+        resp = json.loads(response.strip().removeprefix("```json").removesuffix("```").strip())
+        files = resp.get("files", [])
+
+        if not files:
+            _send_telegram(chat_id, f"✅ DeepSeek analizó la instrucción pero no encontró cambios necesarios.")
+            return
+
+        # Apply edits
+        applied = 0
+        for f in files:
+            fpath = os.path.join(ROOT_DIR, f["path"])
+            if os.path.exists(fpath):
+                with open(fpath, encoding="utf-8") as fh:
+                    content = fh.read()
+                for edit in f["edits"]:
+                    old = edit["old"]
+                    new = edit["new"]
+                    if old in content and old != new:
+                        content = content.replace(old, new, 1)
+                        applied += 1
+                with open(fpath, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+
+        if applied == 0:
+            _send_telegram(chat_id, "⚠ DeepSeek generó cambios pero no se pudieron aplicar (no coincidían con el código actual).")
+            return
+
+        # Git commit
+        subprocess.run(["git", "add", "-A"], cwd=ROOT_DIR, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"feat(code): {instruction[:80]}"],
+                       cwd=ROOT_DIR, capture_output=True)
+        subprocess.run(["git", "push"], cwd=ROOT_DIR, capture_output=True)
+
+        # Restart: kill all python, then re-launch
+        subprocess.run(["wmic", "process", "where", "name='python.exe'", "call", "terminate"],
+                       capture_output=True)
+        import time
+        time.sleep(2)
+        subprocess.Popen([os.path.join(ROOT_DIR, "venv", "Scripts", "python.exe"),
+                          os.path.join(ROOT_DIR, "start_bot_launcher.py")],
+                         cwd=ROOT_DIR)
+
+        _send_telegram(chat_id, f"✅ Instrucción procesada y código modificado ({applied} cambios).\nBot reiniciado.")
+
+    except Exception as e:
+        log.error(f"code instruction failed: {e}")
+        _send_telegram(chat_id, f"❌ Error procesando instrucción: {str(e)[:300]}")
+
+
+def _send_telegram(chat_id: int, text: str):
+    """Send a message via Telegram API (sync, for background threads)."""
+    import json, requests, os
     from config import ROOT_DIR
-    path = os.path.join(ROOT_DIR, ".mp", "pending_instruction.txt")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(instruction)
-    await update.message.reply_text(
-        f"📝 <b>Instrucción registrada:</b>\n\n<code>{instruction[:300]}</code>\n\n"
-        "Sisyphus la procesará en breve, reiniciará el bot y te avisará.",
-        parse_mode="HTML")
+    cfg = json.load(open(os.path.join(ROOT_DIR, ".mp", "telegram.json")))
+    url = f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
 
 
 # ── Message handler ──────────────────────────────────────────────────────
