@@ -200,7 +200,9 @@ def burn_subtitles(
         args["preset"] = "p4"
 
     try:
-        stream = ffmpeg.output(subbed, output_path, **args)
+        # Include audio: scale+subtitles filters are video-only,
+        # so we must map the audio stream from the input explicitly.
+        stream = ffmpeg.output(subbed, in_file.audio, output_path, **args)
         stdout, stderr = ffmpeg.run(stream, overwrite_output=True,
                                      capture_stdout=True, capture_stderr=True)
     except ffmpeg.Error as e:
