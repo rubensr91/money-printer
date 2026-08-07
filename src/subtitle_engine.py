@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 # ── Transcription ───────────────────────────────────────────────────────────
 
 def transcribe(audio_path: str, languages: list[str] | None = None) -> list[dict]:
-    """Transcribe audio with faster-whisper (GPU). Returns entries with start, end, text."""
+    """Transcribe audio with faster-whisper (GPU).
+
+    Uses word timestamps to trim leading/trailing silence and split long
+    segments at natural pauses (>0.8s gap between words) so captions stay
+    tightly locked to speech instead of lingering in silence.
+    """
     from faster_whisper import WhisperModel
     from config import get_whisper_model, get_whisper_device, get_whisper_compute_type
     from langdetect import detect, DetectorFactory
@@ -26,7 +31,7 @@ def transcribe(audio_path: str, languages: list[str] | None = None) -> list[dict
         compute_type=get_whisper_compute_type(),
     )
 
-    entries = []
+    raw_entries = []
     if not languages:
         segments, info = model.transcribe(audio_path, vad_filter=True, word_timestamps=True)
         fallback_lang = getattr(info, "language", None) or "es"
@@ -39,14 +44,16 @@ def transcribe(audio_path: str, languages: list[str] | None = None) -> list[dict
                 lang = detect(txt)
             except Exception:
                 pass
-            entries.append({"start": seg.start, "end": seg.end, "text": txt, "language": lang})
+            raw_entries.append({"start": seg.start, "end": seg.end, "text": txt,
+                                "language": lang, "words": seg.words or []})
     elif len(languages) == 1:
         lang = languages[0]
         segments, _ = model.transcribe(audio_path, vad_filter=True, language=lang, word_timestamps=True)
         for seg in segments:
             txt = (seg.text or "").strip()
             if txt:
-                entries.append({"start": seg.start, "end": seg.end, "text": txt, "language": lang})
+                raw_entries.append({"start": seg.start, "end": seg.end, "text": txt,
+                                    "language": lang, "words": seg.words or []})
     else:
         for lang_code in languages:
             try:
@@ -54,13 +61,53 @@ def transcribe(audio_path: str, languages: list[str] | None = None) -> list[dict
                 for seg in segments:
                     txt = (seg.text or "").strip()
                     if txt:
-                        entries.append({"start": seg.start, "end": seg.end, "text": txt, "language": lang_code})
+                        raw_entries.append({"start": seg.start, "end": seg.end, "text": txt,
+                                            "language": lang_code, "words": seg.words or []})
             except Exception as e:
                 logger.warning(f"Transcription failed for {lang_code}: {e}")
 
+    # Tighten timestamps: trim silence using word boundaries, split at pauses
+    entries = _tighten_entries(raw_entries)
     entries.sort(key=lambda e: e["start"])
-    logger.info(f"Subtitle engine: {len(entries)} entries transcribed")
+    logger.info(f"Subtitle engine: {len(entries)} entries transcribed (tightened)")
     return entries
+
+
+def _tighten_entries(raw_entries: list[dict]) -> list[dict]:
+    """Trim silence and split long segments using word timestamps."""
+    result = []
+    for seg in raw_entries:
+        words = [w for w in seg.get("words", []) if (w.word or "").strip()]
+        if not words:
+            # No word timestamps: keep original but trim a tiny bit
+            result.append({"start": seg["start"], "end": seg["end"],
+                           "text": seg["text"], "language": seg["language"]})
+            continue
+
+        # Group words, splitting at pauses (>0.8s gap)
+        groups = []
+        cur = [words[0]]
+        for w in words[1:]:
+            if w.start - cur[-1].end > 0.8:
+                groups.append(cur)
+                cur = [w]
+            else:
+                cur.append(w)
+        groups.append(cur)
+
+        for group in groups:
+            if not group:
+                continue
+            first_w, last_w = group[0], group[-1]
+            text = " ".join(w.word.strip() for w in group)
+            result.append({
+                "start": first_w.start,
+                "end": last_w.end,
+                "text": text,
+                "language": seg["language"],
+            })
+
+    return result
 
 
 # ── Profanity filter ─────────────────────────────────────────────────────
@@ -135,7 +182,8 @@ def entries_to_ass(
         "bg": True,
         "bg_color": None,
         "font_color": None,
-        "outline": 0,  # text border/stroke width (0 = none)
+        "outline": 0,         # text border/stroke width (0 = none)
+        "outline_color": None,  # border color (default: black)
     }
     if style:
         cfg.update(style)
@@ -143,9 +191,11 @@ def entries_to_ass(
     # Resolve colors
     text_color = _resolve_color(cfg["font_color"]) or (255, 255, 255)
     bg_color = _resolve_color(cfg["bg_color"]) or (0, 0, 0)
+    outline_color = _resolve_color(cfg["outline_color"]) or (0, 0, 0)
     # ASS format: &HAABBGGRR (alpha-blue-green-red in hex)
     tc = f"&H00{text_color[2]:02X}{text_color[1]:02X}{text_color[0]:02X}"
     bc = f"&H80{bg_color[2]:02X}{bg_color[1]:02X}{bg_color[0]:02X}"
+    oc = f"&H00{outline_color[2]:02X}{outline_color[1]:02X}{outline_color[0]:02X}"
     outline = cfg.get("outline", 0)
 
     ass = f"""[Script Info]
@@ -156,7 +206,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},{tc},&H00000000,{bc},-1,0,3,{outline},0,2,30,30,{margin_bottom},1
+Style: Default,Arial,{font_size},{tc},{oc},{bc},-1,0,3,{outline},0,2,30,30,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -182,17 +232,39 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _resolve_color(name: str | None) -> tuple | None:
-    """Convert color name to RGB. Returns None if unknown."""
+    """Convert color name or hex to RGB. Returns None if unknown."""
     if not name:
         return None
+    # Hex: #RRGGBB or RRGGBB
+    if name.startswith("#"):
+        name = name[1:]
+    if len(name) == 6 and all(c in "0123456789ABCDEFabcdef" for c in name):
+        return (int(name[0:2], 16), int(name[2:4], 16), int(name[4:6], 16))
     named = {
-        "white": (255, 255, 255), "blanco": (255, 255, 255),
-        "black": (0, 0, 0), "negro": (0, 0, 0),
-        "red": (255, 0, 0), "rojo": (255, 0, 0),
-        "green": (0, 255, 0), "verde": (0, 255, 0),
-        "blue": (0, 0, 255), "azul": (0, 0, 255),
-        "yellow": (255, 255, 0), "amarillo": (255, 255, 0),
-        "gray": (128, 128, 128), "gris": (128, 128, 128),
+        # Neutros
+        "white": (255,255,255), "blanco": (255,255,255),
+        "black": (0,0,0), "negro": (0,0,0),
+        "gray": (128,128,128), "gris": (128,128,128),
+        "silver": (192,192,192), "plateado": (192,192,192),
+        # Primarios
+        "red": (255,0,0), "rojo": (255,0,0),
+        "green": (0,255,0), "verde": (0,255,0),
+        "blue": (0,0,255), "azul": (0,0,255),
+        # Secundarios
+        "yellow": (255,255,0), "amarillo": (255,255,0),
+        "cyan": (0,255,255), "cian": (0,255,255),
+        "magenta": (255,0,255), "magenta": (255,0,255),
+        # Comunes
+        "orange": (255,165,0), "naranja": (255,165,0),
+        "purple": (128,0,128), "morado": (128,0,128), "púrpura": (128,0,128),
+        "pink": (255,192,203), "rosa": (255,192,203),
+        "brown": (139,69,19), "marron": (139,69,19), "marrón": (139,69,19),
+        "lime": (50,205,50), "lima": (50,205,50),
+        "navy": (0,0,128), "azul marino": (0,0,128),
+        "teal": (0,128,128), "turquesa": (0,128,128),
+        "coral": (255,127,80), "coral": (255,127,80),
+        "gold": (255,215,0), "dorado": (255,215,0), "oro": (255,215,0),
+        "violet": (238,130,238), "violeta": (238,130,238),
     }
     return named.get(name.lower())
 

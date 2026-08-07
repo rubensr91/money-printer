@@ -558,23 +558,47 @@ def parse_render_settings(instructions):
             sub_style["bg"] = False
         elif any(kw in low for kw in ["con fondo", "con caja", "con recuadro", "con bg"]):
             sub_style["bg"] = True
-        # Background color
-        for col in ["negro", "black", "blanco", "white", "rojo", "red", "azul", "blue",
-                     "verde", "green", "amarillo", "yellow", "gris", "gray"]:
-            if f"fondo {col}" in low or f"caja {col}" in low or f"bg {col}" in low:
-                sub_style["bg_color"] = col
-                break
-        # Font color
-        for col in ["blanco", "white", "negro", "black", "amarillo", "yellow",
-                     "rojo", "red", "azul", "blue", "verde", "green"]:
-            if f"letra {col}" in low or f"texto {col}" in low:
-                sub_style["font_color"] = col
-                break
+        # Background color (named + hex)
+        m = re.search(r'(?:fondo|caja|bg)\s+(#[0-9a-fA-F]{6})', low)
+        if m:
+            sub_style["bg_color"] = m.group(1)
+        else:
+            for col in ["negro", "black", "blanco", "white", "rojo", "red", "azul", "blue",
+                         "verde", "green", "amarillo", "yellow", "gris", "gray",
+                         "naranja", "orange", "morado", "purple", "rosa", "pink"]:
+                if f"fondo {col}" in low or f"caja {col}" in low or f"bg {col}" in low:
+                    sub_style["bg_color"] = col
+                    break
+        # Font color (named + hex)
+        m = re.search(r'(?:letra|texto)\s+(#[0-9a-fA-F]{6})', low)
+        if m:
+            sub_style["font_color"] = m.group(1)
+        else:
+            for col in ["blanco", "white", "negro", "black", "amarillo", "yellow",
+                         "rojo", "red", "azul", "blue", "verde", "green",
+                         "naranja", "orange", "rosa", "pink", "morado", "purple"]:
+                if f"letra {col}" in low or f"texto {col}" in low:
+                    sub_style["font_color"] = col
+                    break
         if sub_style:
             settings["subtitles_style"] = sub_style
         # Border/stroke on text
-        if any(kw in low for kw in ["borde", "contorno", "con borde", "con contorno", "stroke"]):
+        if any(kw in low for kw in ["sin borde", "sin contorno"]):
+            sub_style["outline"] = 0
+        elif any(kw in low for kw in ["borde", "contorno", "con borde", "con contorno", "stroke"]):
             sub_style["outline"] = 3  # default outline width
+        # Border color: "borde rojo", "contorno #FF0000"
+        for col in ["rojo", "red", "negro", "black", "blanco", "white", "azul", "blue",
+                     "verde", "green", "amarillo", "yellow", "naranja", "orange"]:
+            if f"borde {col}" in low or f"contorno {col}" in low:
+                sub_style["outline_color"] = col
+                sub_style.setdefault("outline", 3)
+                break
+        # Hex border: "borde #FF0000"
+        m = re.search(r'(?:borde|contorno)\s+(#[0-9a-fA-F]{6})', low)
+        if m:
+            sub_style["outline_color"] = m.group(1)
+            sub_style.setdefault("outline", 3)
         # Language filter
         if "idioma es" in low or "solo espanol" in low or "solo español" in low:
             settings["subtitles_lang"] = ["es"]
