@@ -989,7 +989,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
     encoder = _get_encoder()
     info(f"Using encoder: {encoder}")
 
-    if subtitle_ass:
+    if subtitle_ass or overlay_ass:
         # Two-pass: MoviePy compositing to temp (540p), ffmpeg subtitles + upscale
         temp_path = os.path.join(output_dir, f"_tmp_{clip_idx}.mp4")
         try:

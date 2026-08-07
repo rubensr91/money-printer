@@ -306,8 +306,8 @@ def permanent_text_to_ass(
     alignment = {"top": 8, "center": 5, "bottom": 2}.get(cfg["position"], 8)
     margin_v = 60 if cfg["position"] == "top" else (60 if cfg["position"] == "bottom" else 0)
 
-    # Use Segoe UI for emoji support (falls back gracefully)
-    font = "Segoe UI"
+    # Use Arial (reliably available on Windows via libass)
+    font = "Arial"
 
     end = _fmt_ass_time(duration)
     return f"""[Script Info]
@@ -321,7 +321,7 @@ Style: Overlay,{font},60,{tc},&H00000000,{bc},-1,0,3,{outline},0,{alignment},160
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,{end},Overlay,,0,0,0,,{text}
+Dialogue: 0,0:00:00.00,{end},Overlay,,0,0,0,,{text.upper()}
 """
 
 
@@ -358,12 +358,16 @@ def burn_subtitles(
 
     in_file = ffmpeg.input(video_path_rel)
     scaled = ffmpeg.filter(in_file, "scale", 1080, 1920)
-    subbed = ffmpeg.filter(scaled, "subtitles", ass_path_rel)
+    stream = scaled
 
-    # Optional permanent text overlay
-    if overlay_ass:
+    # Burn timed subtitles (optional)
+    if ass_path and os.path.exists(ass_path):
+        stream = ffmpeg.filter(stream, "subtitles", ass_path_rel)
+
+    # Burn permanent text overlay (optional)
+    if overlay_ass and os.path.exists(overlay_ass):
         overlay_rel = os.path.relpath(overlay_ass)
-        subbed = ffmpeg.filter(subbed, "subtitles", overlay_rel)
+        stream = ffmpeg.filter(stream, "subtitles", overlay_rel)
 
     args = {"vcodec": encoder, "acodec": "aac", "r": fps}
     if encoder == "h264_nvenc":
@@ -372,7 +376,7 @@ def burn_subtitles(
     try:
         # Include audio: scale+subtitles filters are video-only,
         # so we must map the audio stream from the input explicitly.
-        stream = ffmpeg.output(subbed, in_file.audio, output_path, **args)
+        stream = ffmpeg.output(stream, in_file.audio, output_path, **args)
         stdout, stderr = ffmpeg.run(stream, overwrite_output=True,
                                      capture_stdout=True, capture_stderr=True)
     except ffmpeg.Error as e:
