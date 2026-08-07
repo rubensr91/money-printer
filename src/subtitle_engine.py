@@ -159,7 +159,7 @@ def entries_to_ass(
     entries: list[dict],
     video_w: int = 1080,
     video_h: int = 1920,
-    font_size: int = 70,
+    font_size: int = 60,
     margin_bottom: int = 140,
     style: dict | None = None,
 ) -> str:
@@ -206,7 +206,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},{tc},{oc},{bc},-1,0,3,{outline},0,2,30,30,{margin_bottom},1
+Style: Default,Arial,{font_size},{tc},{oc},{bc},-1,0,3,{outline},0,2,100,100,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
