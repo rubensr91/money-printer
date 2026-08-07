@@ -494,10 +494,15 @@ def parse_render_settings(instructions):
               "sigue mi perfil", "síguelo", "siguelo", "no te pierdas", "sígueme para más"]
     if any(kw in low for kw in cta_kw):
         settings["cta"] = True
-        # Custom CTA text in quotes — extract from ORIGINAL text to keep case
+        # CTA text: quoted text OR "CTA: texto" format OR "CTA texto"
         m = re.search(r'["""]\s*([^"""]+)\s*["""]', instructions)
         if m:
             settings["cta_text"] = m.group(1).strip()
+        elif ":" in instructions:
+            # "CTA: Sígueme para más clips!" -> extract after colon
+            m = re.search(r'cta\s*:\s*(.+?)(?:\s*$)', instructions, re.IGNORECASE)
+            if m:
+                settings["cta_text"] = m.group(1).strip()
 
         # CTA background color: "fondo <color>" or bare color word
         m = re.search(r'fondo\s+(\w+)', low)
@@ -558,14 +563,24 @@ def parse_render_settings(instructions):
         if any(kw in low for kw in ["palabra por palabra", "palabra a palabra", "word", "karaoke"]):
             sub_style["word_level"] = True
 
-        # Font color: "de color X"
-        m = re.search(r'de color\s+(#[0-9a-fA-F]{6})', low)
+        # Font color: "de color X" or "letra color X" or "texto color X"
+        m = re.search(r'(?:de|letra|texto)\s+color\s+(#[0-9a-fA-F]{6})', low)
         if m:
             sub_style["font_color"] = m.group(1)
         else:
-            m = re.search(r'de color\s+(\w+)', low)
+            m = re.search(r'(?:de|letra|texto)\s+color\s+(\w+)', low)
             if m:
                 sub_style["font_color"] = m.group(1)
+        # Also: plain "letra amarilla" / "texto blanco" (no "color" keyword)
+        if not sub_style.get("font_color"):
+            for col, variants in [("blanco", ["blanco","blanca","white"]), ("negro", ["negro","negra","black"]),
+                ("amarillo", ["amarillo","amarilla","yellow"]), ("rojo", ["rojo","roja","red"]),
+                ("azul", ["azul","blue"]), ("verde", ["verde","green"]),
+                ("naranja", ["naranja","orange"]), ("rosa", ["rosa","pink"]),
+                ("morado", ["morado","morada","purple"])]:
+                if any(f"letra {v}" in low or f"texto {v}" in low for v in variants):
+                    sub_style["font_color"] = col
+                    break
 
         # Border: "con borde [X]" / "sin borde"
         if re.search(r'sin\s+borde', low):
