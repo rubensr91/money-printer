@@ -620,13 +620,43 @@ def parse_render_settings(instructions):
         else:
             settings["subtitles_lang"] = None  # auto-detect
 
-    # Overlay text burned in clip — only when it's NOT a CTA (CTA has its own text)
-    if not settings.get("cta") or not settings.get("cta_text"):
-        m = re.search(r'texto\s*["\u201c]\s*([^"\u201d]+)', instructions)
-        if m:
-            settings["overlay_text"] = m.group(1).strip()
-            if "negro" in low and "fondo blanco" in low:
-                settings["overlay_color"] = "black"
+    # ── Permanent text overlay (top/middle/bottom, full clip duration) ──
+    # "texto arriba HOLA", "texto abajo letra amarilla con borde SUSCRÍBETE 👍"
+    txt_kw = ["texto arriba", "texto abajo", "texto en medio", "texto centrado",
+              "texto superior", "texto inferior"]
+    for kw in txt_kw:
+        if kw in low:
+            txt_style = {}
+            if "arriba" in kw or "superior" in kw:
+                txt_style["position"] = "top"
+            elif "abajo" in kw or "inferior" in kw:
+                txt_style["position"] = "bottom"
+            else:
+                txt_style["position"] = "center"
+            # Extract text: everything after the position keyword
+            m = re.search(rf'{re.escape(kw)}\s+(.+)', low)
+            if m:
+                raw = m.group(1).strip()
+                # Strip style keywords to get just the display text
+                for prefix in ["letra amarilla ", "letra amarillo ", "letra blanca ", "letra blanco ",
+                               "letra roja ", "letra rojo ", "letra negra ", "letra negro ",
+                               "letra azul ", "letra verde ",
+                               "con borde ", "sin borde ",
+                               "sin fondo ", "con fondo ",
+                               "fondo negro ", "fondo blanco ", "fondo rojo ", "fondo azul "]:
+                    raw = raw.replace(prefix, "")
+                txt_style["text"] = raw.strip()
+            # Sub-styles
+            for col, vars_ in [("blanco",["blanco","blanca","white"]),("negro",["negro","negra","black"]),
+                ("amarillo",["amarillo","amarilla","yellow"]),("rojo",["rojo","roja","red"]),
+                ("azul",["azul","blue"]),("verde",["verde","green"])]:
+                if any(f"letra {v}" in low for v in vars_): txt_style["font_color"] = col; break
+            if "con borde" in low: txt_style["outline"] = 3
+            if "sin fondo" in low: txt_style["bg"] = False
+            for col in ["negro","black","blanco","white","rojo","red","azul","blue"]:
+                if f"fondo {col}" in low: txt_style["bg_color"] = col; break
+            settings["overlay_text_style"] = txt_style
+            break
 
     # DEFAULT: when instructions are present but no clip count, use 1 clip
     # (don't cut unless user explicitly asks with "N clips")
@@ -852,7 +882,7 @@ def _get_encoder():
     return _ENCODER_CACHE
 
 
-def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_lang=None, subtitles_style=None):
+def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pixel", overlay_text=None, overlay_color="white", dynamic=False, cta=False, cta_text=None, cta_bg="white", subtitles=False, subtitles_lang=None, subtitles_style=None, overlay_text_style=None):
     """Render one clip in panoramic format. Uses GPU encoder when available.
     If dynamic=True and bg is panoramic, tracks faces for speaker-following crop."""
     clip_dur = clip_end - clip_start
@@ -880,6 +910,7 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
 
     # ── Subtitles: Whisper GPU + ffmpeg ASS burn ─────────────────────
     subtitle_ass = None
+    overlay_ass = None
     if subtitles:
         from subtitle_engine import transcribe, entries_to_ass, burn_subtitles, extract_audio_segment
         tmp_wav = extract_audio_segment(video_path, clip_start, clip_end, output_dir)
@@ -900,6 +931,17 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
         finally:
             if os.path.exists(tmp_wav):
                 os.remove(tmp_wav)
+
+    # Permanent text overlay (independent of subtitles)
+    if overlay_text_style:
+        from subtitle_engine import permanent_text_to_ass
+        overlay_ass = os.path.join(output_dir, f"_overlay_{clip_idx}.ass")
+        ass_text = permanent_text_to_ass(
+            overlay_text_style["text"], clip_dur,
+            style=overlay_text_style)
+        with open(overlay_ass, "w", encoding="utf-8") as f:
+            f.write(ass_text)
+        ok(f"  Overlay text prepared: {overlay_text_style['text'][:40]}")
 
     # ── CTA: full-screen blank card AFTER the clip (2s) ────────────────
     if cta:
@@ -961,7 +1003,8 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
                                      ffmpeg_params=["-crf", "18"])
             clip.close()
             from subtitle_engine import burn_subtitles
-            burn_subtitles(temp_path, subtitle_ass, output_path, encoder=encoder)
+            burn_subtitles(temp_path, subtitle_ass, output_path, encoder=encoder,
+                          overlay_ass=overlay_ass)
             ok(f"  Subtitles burned via ffmpeg ASS")
         except Exception as e:
             raise e
@@ -970,6 +1013,8 @@ def process_clip(video_path, clip_start, clip_end, clip_idx, output_dir, bg="pix
                 os.remove(temp_path)
             if os.path.exists(subtitle_ass):
                 os.remove(subtitle_ass)
+            if os.path.exists(overlay_ass):
+                os.remove(overlay_ass)
     else:
         # Standard path: MoviePy compositing + NVENC upscale in one pass
         upscale = ["-vf", f"scale={_FINAL_W}:{_FINAL_H}"]
@@ -1125,6 +1170,7 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
     subtitles = render.get("subtitles", False)
     subtitles_lang = render.get("subtitles_lang")
     subtitles_style = render.get("subtitles_style")
+    overlay_text_style = render.get("overlay_text_style")
     if overlay_text:
         warn(f"Overlay text: {overlay_text} ({overlay_color})")
     if bg != "pixel":
@@ -1179,7 +1225,8 @@ def main_stream(youtube_url, min_clip=5, max_clip=0, num_clips=3, reporter=None,
                            bg=bg, overlay_text=overlay_text, overlay_color=overlay_color, dynamic=dynamic,
                            cta=cta, cta_text=cta_text, cta_bg=cta_bg,
                            subtitles=subtitles, subtitles_lang=subtitles_lang,
-                           subtitles_style=subtitles_style)
+                           subtitles_style=subtitles_style,
+                           overlay_text_style=overlay_text_style)
         yield {"path": out, "duration": m["end"] - m["start"], "index": i + 1, "bg": bg,
                "description": description, "tags": tags,
                "source_video": video_path, "moment_start": m["start"], "moment_end": m["end"]}

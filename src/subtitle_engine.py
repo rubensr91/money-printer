@@ -269,6 +269,62 @@ def _resolve_color(name: str | None) -> tuple | None:
     return named.get(name.lower())
 
 
+# ── Permanent text overlay ────────────────────────────────────────────────
+
+def permanent_text_to_ass(
+    text: str,
+    duration: float,
+    video_w: int = 1080,
+    video_h: int = 1920,
+    style: dict | None = None,
+) -> str:
+    """Generate ASS with a single permanent text line for the full clip duration.
+
+    Args:
+        text: the text to display (supports emoji via Segoe UI Emoji font)
+        duration: clip duration in seconds
+        style: {position: top|center|bottom, font_color, bg, bg_color, outline}
+    """
+    cfg = {
+        "position": "top",
+        "font_color": None,
+        "bg": True,
+        "bg_color": None,
+        "outline": 0,
+    }
+    if style:
+        cfg.update(style)
+
+    # Resolve colors
+    text_color = _resolve_color(cfg["font_color"]) or (255, 255, 255)
+    bg_color = _resolve_color(cfg["bg_color"]) or (0, 0, 0)
+    tc = f"&H00{text_color[2]:02X}{text_color[1]:02X}{text_color[0]:02X}"
+    bc = f"&H80{bg_color[2]:02X}{bg_color[1]:02X}{bg_color[0]:02X}"
+    outline = cfg.get("outline", 0)
+
+    # ASS Alignment: 8=top-center, 5=middle-center, 2=bottom-center
+    alignment = {"top": 8, "center": 5, "bottom": 2}.get(cfg["position"], 8)
+    margin_v = 60 if cfg["position"] == "top" else (60 if cfg["position"] == "bottom" else 0)
+
+    # Use Segoe UI for emoji support (falls back gracefully)
+    font = "Segoe UI"
+
+    end = _fmt_ass_time(duration)
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {video_w}
+PlayResY: {video_h}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Overlay,{font},60,{tc},&H00000000,{bc},-1,0,3,{outline},0,{alignment},160,160,{margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,{end},Overlay,,0,0,0,,{text}
+"""
+
+
 # ── ffmpeg subtitle burn ───────────────────────────────────────────────────
 
 def burn_subtitles(
@@ -277,6 +333,7 @@ def burn_subtitles(
     output_path: str,
     encoder: str = "h264_nvenc",
     fps: int = 30,
+    overlay_ass: str | None = None,
 ) -> str:
     """Burn ASS subtitles into video using ffmpeg-python.
 
@@ -302,6 +359,11 @@ def burn_subtitles(
     in_file = ffmpeg.input(video_path_rel)
     scaled = ffmpeg.filter(in_file, "scale", 1080, 1920)
     subbed = ffmpeg.filter(scaled, "subtitles", ass_path_rel)
+
+    # Optional permanent text overlay
+    if overlay_ass:
+        overlay_rel = os.path.relpath(overlay_ass)
+        subbed = ffmpeg.filter(subbed, "subtitles", overlay_rel)
 
     args = {"vcodec": encoder, "acodec": "aac", "r": fps}
     if encoder == "h264_nvenc":
